@@ -23,7 +23,9 @@ export type Message = {
   status: 'sent' | 'delivered' | 'read';
 };
 
-export const localDb = new PouchDB('chatzap');
+type Doc = Conversation | Message;
+
+export const localDb = new PouchDB<Doc>('chatzap');
 
 export function createIndexes() {
   return Promise.all([
@@ -33,36 +35,43 @@ export function createIndexes() {
   ]);
 }
 
-export async function upsert<T extends { _id: string }>(doc: T): Promise<T> {
+export async function upsert<T extends Doc>(doc: T): Promise<T> {
+  const isNotFound = (e: unknown): e is { status: number } =>
+    typeof e === 'object' && e !== null && 'status' in e && (e as { status: number }).status === 404;
   try {
     const existing = await localDb.get<T>(doc._id);
-    const res = await localDb.put({ ...existing, ...doc, _rev: (existing as any)._rev });
-    return { ...(doc as any), _rev: res.rev };
-  } catch (err: any) {
-    if (err.status === 404) {
-      const res = await localDb.put(doc as any);
-      return { ...(doc as any), _rev: res.rev };
+    const updated: PouchDB.Core.PutDocument<T> = { ...(existing as T), ...(doc as T), _id: doc._id, _rev: (existing as PouchDB.Core.Document<unknown> & PouchDB.Core.RevisionIdMeta)._rev };
+    await localDb.put(updated);
+    return doc;
+  } catch (err: unknown) {
+    if (isNotFound(err)) {
+      await localDb.put(doc as PouchDB.Core.PutDocument<T>);
+      return doc;
     }
     throw err;
   }
 }
 
 export async function listConversations(): Promise<Conversation[]> {
+  const sortUpdatedDesc: Record<string, 'asc' | 'desc'> = { updatedAt: 'desc' };
   const result = await localDb.find({
     selector: { type: 'conversation' },
-    sort: [{ updatedAt: 'desc' } as any],
+    sort: [sortUpdatedDesc],
     limit: 200,
   });
-  return (result.docs as unknown as Conversation[]);
+  const docs = result.docs as Doc[];
+  return docs.filter((d): d is Conversation => (d as Conversation).type === 'conversation');
 }
 
 export async function listMessages(conversationId: string, limit = 200): Promise<Message[]> {
+  const sortCreatedAsc: Record<string, 'asc' | 'desc'> = { createdAt: 'asc' };
   const result = await localDb.find({
     selector: { type: 'message', conversationId },
-    sort: [{ createdAt: 'asc' } as any],
+    sort: [sortCreatedAsc],
     limit,
   });
-  return (result.docs as unknown as Message[]);
+  const docs = result.docs as Doc[];
+  return docs.filter((d): d is Message => (d as Message).type === 'message');
 }
 
 export function generateId(prefix: string) {
@@ -106,7 +115,8 @@ export async function seedIfEmpty() {
     },
   ];
 
-  await localDb.bulkDocs([convo, ...messages] as any);
+  const docs: Array<PouchDB.Core.PutDocument<Doc>> = [convo, ...messages];
+  await localDb.bulkDocs(docs);
 }
 
 export function configureSync(remoteUrl?: string) {
