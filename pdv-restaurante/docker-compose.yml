@@ -20,7 +20,7 @@ services:
       timeout: 3s
       retries: 10
 
-  api: # API NestJS (Fase 1) — http://localhost:3001 (demo: /demo.html)
+  api: # API NestJS — http://localhost:3001 (demo: /demo.html, KDS: /kds.html)
     build: ./apps/api
     container_name: pdv-api
     environment:
@@ -31,6 +31,26 @@ services:
       - "3001:3001"
     depends_on:
       db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health > /dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  print-agent: # Fase 2 — consome a fila e imprime (virtual por padrão; MODO_IMPRESSAO=real na LAN)
+    build: ./apps/print-agent
+    container_name: pdv-print-agent
+    environment:
+      API_URL: http://api:3001
+      AGENT_EMAIL: ${AGENT_EMAIL:-diego@casadofogo.com}
+      AGENT_PIN: ${AGENT_PIN:-5555}
+      MODO: ${MODO_IMPRESSAO:-virtual}
+      POLL_MS: 3000
+    volumes:
+      - ./apps/print-agent/tickets:/app/tickets
+    depends_on:
+      api:
         condition: service_healthy
 
   adminer:  # UI web opcional p/ inspecionar o banco: http://localhost:8081 (servidor: db, user/senha: pdv)

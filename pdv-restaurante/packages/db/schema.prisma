@@ -409,6 +409,7 @@ model ImpressaoLog {
   id               BigInt              @id @default(autoincrement())
   remessaId        BigInt              @map("remessa_id")
   estacaoId        BigInt              @map("estacao_id")
+  tipo             String              @default("PRODUCAO") // PRODUCAO | CANCELAMENTO
   status           TipoStatusImpressao @default(PENDENTE)
   conteudo         String?
   tentativas       Int                 @default(0)

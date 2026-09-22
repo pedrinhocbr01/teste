@@ -96,4 +96,16 @@ export class AtualizarImpressaoDto {
   @IsString()
   @IsIn(['IMPRESSA', 'FALHA'])
   status!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(8000)
+  conteudo?: string;
+}
+
+export class ReimprimirDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  estacaoId?: number;
 }

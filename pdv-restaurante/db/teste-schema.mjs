@@ -77,6 +77,36 @@ check('movimento de estorno registrado com motivo',
   (await q(`SELECT COUNT(*)::int AS v FROM estoque_movimento
             WHERE tipo='AJUSTE_POSITIVO' AND origem='CANCELAMENTO_ITEM'`))[0].v === 1);
 
+console.log('\n== FASE 2: ticket de CANCELAMENTO na fila de impressão ==');
+// Cenário isolado (mesa 2, pedido novo): envia bruschetta + caipirinha,
+// cancela a bruschetta — a cozinha precisa VER o cancelamento impresso.
+const pedF2 = (await q(`INSERT INTO pedido (mesa_id, garcom_id) VALUES (2, 1) RETURNING id`))[0].id;
+const itensF2 = await q(`INSERT INTO pedido_item (pedido_id, produto_id, quantidade, preco_unitario)
+  VALUES (${pedF2}, 1, 1, 26.00), (${pedF2}, 6, 1, 19.90) RETURNING id, produto_id`);
+const remF2 = (await q(
+  `INSERT INTO remessa (pedido_id, tipo, enviado_por) VALUES (${pedF2}, 'ENTRADA', 1) RETURNING id`))[0].id;
+await q(`UPDATE pedido_item SET remessa_id = ${remF2}, status = 'ENVIADO', atualizado_por = 1
+         WHERE pedido_id = ${pedF2}`);
+const bruscF2 = itensF2.find(i => Number(i.produto_id) === 1).id;
+await q(`UPDATE pedido_item SET status = 'CANCELADO', motivo_cancelamento = 'Sem tomate hoje',
+         atualizado_por = 1 WHERE id = ${bruscF2}`);
+const cancelJobs = await q(`
+  SELECT l.tipo, l.status, e.tipo AS estacao, l.conteudo
+  FROM impressao_log l JOIN estacao e ON e.id = l.estacao_id
+  WHERE l.remessa_id = ${remF2} AND l.tipo = 'CANCELAMENTO'`);
+check('cancelamento gerou ticket CANCELAMENTO na cozinha',
+  cancelJobs.length === 1 && cancelJobs[0].estacao === 'COZINHA' && cancelJobs[0].status === 'PENDENTE');
+check('ticket traz item + motivo',
+  /bruschetta/i.test(cancelJobs[0]?.conteudo || '') && /sem tomate/i.test(cancelJobs[0]?.conteudo || ''));
+const prodJobs = await q(
+  `SELECT COUNT(*)::int AS v FROM impressao_log WHERE remessa_id = ${remF2} AND tipo = 'PRODUCAO' AND status = 'PENDENTE'`);
+check('PRODUCAO e CANCELAMENTO coexistem (2 producao pendentes)', prodJobs[0].v === 2);
+let dupBloqueado = false;
+try {
+  await q(`INSERT INTO impressao_log (remessa_id, estacao_id, tipo) VALUES (${remF2}, 1, 'PRODUCAO')`);
+} catch { dupBloqueado = true; }
+check('idempotência preservada: 2º PRODUCAO pendente bloqueado', dupBloqueado);
+
 console.log('\n== Alerta de estoque mínimo ==');
 const alertas = await q(`SELECT nome, nivel FROM vw_alerta_estoque
                           WHERE nivel <> 'OK' ORDER BY nivel, nome`);

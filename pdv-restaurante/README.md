@@ -164,7 +164,7 @@ npm test                         # roda db/teste-schema.mjs (19 asserções)
 |------|---------|
 | 0 | ✅ Schema + seed + regras no banco (este repositório) |
 | 1 | ✅ **API pronta (esta branch)**: cadastros + auth PIN + atendimento (pedidos/remessas/envio) + WS + fila p/ print-agent · 🔲 PWA do garçom (Next.js) — demo provisória em `/demo.html` |
-| 2 | Print agent ESC/POS + reimpressão de item cancelado; KDS da cozinha/pronto (WS) |
+| 2 | ✅ **Pronto (esta branch)**: print-agent ESC/POS (:9100, modo virtual p/ dev) + ticket automático de cancelamento + reimpressão manual + KDS (`/kds.html`) em tempo real |
 | 3 | Contas: impressão de conta, divisão por item/igualitária, 10%, pagamentos parciais; caixa: abertura, sangria/suprimento, fechamento com conferência |
 | 4 | Estoque avançado: recebimento de compra c/ atualização de custo, inventário c/ diferença, custo-margem por prato, CMV e perda |
 | 5 | Relatórios (PRD/gerencial), Pix com QR dinâmico (gateway), multi-filia, NF-e/CF-e se exigido pelo município |

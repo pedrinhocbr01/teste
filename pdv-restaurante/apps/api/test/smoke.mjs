@@ -116,6 +116,42 @@ try {
   });
   check('editar item enviado → 400', edit.status === 400, `status=${edit.status}`);
 
+  // ---- FASE 2: KDS por estação ----
+  const kdsCoz = await api('/kds/fila?estacao=COZINHA', { token: tokCoz });
+  check('KDS cozinha lista bruschetta EM_PREPARO',
+    kdsCoz.data.items?.some((i) => i.produto.includes('Bruschetta') && i.status === 'EM_PREPARO'),
+    `itens=${kdsCoz.data.items?.length}`);
+  const kdsBar = await api('/kds/fila?estacao=BAR', { token: tokCoz });
+  check('KDS bar lista caipirinha ENVIADO',
+    kdsBar.data.items?.some((i) => i.produto.includes('Caipirinha') && i.status === 'ENVIADO'));
+
+  // ---- FASE 2: cancelar item enviado → ticket CANCELAMENTO ----
+  const canc = await api(`/pedidos/${pid}/itens/${item1.data.id}/cancelar`, {
+    method: 'POST', token, body: { motivo: 'Sem tomate hoje' },
+  });
+  check('cancelar item enviado (estorno)', canc.data?.acao === 'cancelado_com_estorno', JSON.stringify(canc.data));
+  const cancJobs = await api('/impressao-log?status=PENDENTE&tipo=CANCELAMENTO', { token });
+  check('ticket CANCELAMENTO na fila',
+    cancJobs.data.length === 1 && /bruschetta/i.test(cancJobs.data[0].conteudo || ''),
+    cancJobs.data[0]?.conteudo);
+  const kdsCanc = await api('/kds/fila?estacao=COZINHA', { token: tokCoz });
+  check('KDS mostra cancelados recentes',
+    kdsCanc.data.cancelados?.some((i) => i.produto.includes('Bruschetta')));
+
+  // ---- FASE 2: reimpressão manual ----
+  const remId = envio.data.remessa.id;
+  const estCoz = envio.data.jobs.find((j) => j.estacao_tipo === 'COZINHA').estacao_id;
+  const re1 = await api(`/impressao-log/remessa/${remId}/reimprimir`, {
+    method: 'POST', token, body: { estacaoId: estCoz },
+  });
+  check('reimprimir reaproveita pendente', re1.data.jobs?.[0]?.reusado === true);
+  await api(`/impressao-log/${re1.data.jobs[0].id}`, { method: 'PATCH', token, body: { status: 'IMPRESSA' } });
+  const re2 = await api(`/impressao-log/remessa/${remId}/reimprimir`, {
+    method: 'POST', token, body: { estacaoId: estCoz },
+  });
+  check('reimprimir cria novo job após impresso',
+    re2.data.jobs?.[0]?.reusado === false && re2.data.jobs[0].id !== re1.data.jobs[0].id);
+
   // 7. RBAC: garçom não cria produto
   const forb = await api('/produtos', { method: 'POST', token, body: { nome: 'X', categoriaId: 1, preco: 1 } });
   check('garçom criar produto → 403', forb.status === 403, `status=${forb.status}`);

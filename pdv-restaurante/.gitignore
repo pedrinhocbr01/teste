@@ -4,3 +4,5 @@ build/
 .pglite/
 .env
 *.log
+tickets/
+apps/print-agent/tickets/
