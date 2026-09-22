@@ -1,0 +1,32 @@
+# Ambiente de desenvolvimento do PDV (subir só o banco já basta p/ começar)
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: pdv-db
+    environment:
+      POSTGRES_USER: pdv
+      POSTGRES_PASSWORD: pdv
+      POSTGRES_DB: pdv
+    ports:
+      - "5433:5432"
+    volumes:
+      - pdv-pgdata:/var/lib/postgresql/data
+      # aplica schema+seed automaticamente num banco vazio:
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./db/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pdv -d pdv"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  adminer:  # UI web opcional p/ inspecionar o banco: http://localhost:8081 (servidor: db, user/senha: pdv)
+    image: adminer:latest
+    ports:
+      - "8081:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pdv-pgdata:
