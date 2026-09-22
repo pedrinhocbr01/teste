@@ -1,0 +1,17 @@
+{
+  "name": "@pdv/db",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Modelo Prisma do PDV (espelha db/schema.sql). Views e triggers vivem no schema.sql.",
+  "scripts": {
+    "generate": "prisma generate",
+    "pull": "prisma db pull",
+    "studio": "prisma studio"
+  },
+  "devDependencies": {
+    "prisma": "^5.22.0"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0"
+  }
+}

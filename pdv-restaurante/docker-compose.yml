@@ -1,4 +1,4 @@
-# Ambiente de desenvolvimento do PDV (subir só o banco já basta p/ começar)
+# Ambiente de desenvolvimento do PDV
 services:
   db:
     image: postgres:16-alpine
@@ -19,6 +19,19 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  api: # API NestJS (Fase 1) — http://localhost:3001 (demo: /demo.html)
+    build: ./apps/api
+    container_name: pdv-api
+    environment:
+      DATABASE_URL: postgres://pdv:pdv@db:5432/pdv
+      JWT_SECRET: ${JWT_SECRET:-troque-em-producao}
+      PORT: 3001
+    ports:
+      - "3001:3001"
+    depends_on:
+      db:
+        condition: service_healthy
 
   adminer:  # UI web opcional p/ inspecionar o banco: http://localhost:8081 (servidor: db, user/senha: pdv)
     image: adminer:latest

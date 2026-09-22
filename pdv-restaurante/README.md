@@ -163,7 +163,7 @@ npm test                         # roda db/teste-schema.mjs (19 asserções)
 | Fase | Entrega |
 |------|---------|
 | 0 | ✅ Schema + seed + regras no banco (este repositório) |
-| 1 | API: cadastros (insumos, produtos, fichas, mesas) + auth PIN; PWA garçom: mesa → rascunho → remessas → envio (sem impressão ainda: fila no banco já cria o job) |
+| 1 | ✅ **API pronta (esta branch)**: cadastros + auth PIN + atendimento (pedidos/remessas/envio) + WS + fila p/ print-agent · 🔲 PWA do garçom (Next.js) — demo provisória em `/demo.html` |
 | 2 | Print agent ESC/POS + reimpressão de item cancelado; KDS da cozinha/pronto (WS) |
 | 3 | Contas: impressão de conta, divisão por item/igualitária, 10%, pagamentos parciais; caixa: abertura, sangria/suprimento, fechamento com conferência |
 | 4 | Estoque avançado: recebimento de compra c/ atualização de custo, inventário c/ diferença, custo-margem por prato, CMV e perda |
@@ -175,3 +175,69 @@ npm test                         # roda db/teste-schema.mjs (19 asserções)
 - **Troco**: dinheiro guarda `valor` recebido e `valor_troco`; o caixa confere o líquido.
 - **Combo "serve 2"**: picanha com peso na ficha e preço fixo — custo sai por porção; se vender meia-porção, é outro produto com outra ficha (não dividir quantidade fracionária de prato).
 - **Perda do dia**: registrar `PERDA` no estoque (kitchen waste) — sem isso o CMV mente.
+
+---
+
+## 8. Fase 1 — API NestJS (nesta branch)
+
+Código em `apps/api` (NestJS 10 + Socket.IO) e modelo Prisma em
+`packages/db/schema.prisma` (tipos + conferência de drift; views/triggers
+continuam no `schema.sql`).
+
+### Como rodar (2 modos)
+
+```bash
+# A) Dev rápido — SEM docker/postgres (banco embutido PGlite em memória):
+cd apps/api
+npm install
+npm run start:dev     # http://localhost:3001 — demo: /demo.html — health: /health
+
+# B) Produção/docker — Postgres real:
+cd pdv-restaurante
+docker compose up -d --build   # db (5433) + api (3001) + adminer (8081)
+# a API usa DATABASE_URL=postgres://pdv:pdv@db:5432/pdv
+```
+
+Variáveis (`apps/api/.env`, ver `.env.example`): `PORT`, `DATABASE_URL`
+(vazio = PGlite), `JWT_SECRET`, `JWT_EXPIRES_IN`, `PGLITE_DIR` (persistir dev).
+
+### Teste de fumaça E2E (19 checks)
+
+```bash
+cd apps/api
+npm run smoke   # build + sobe a API + fluxo garçom completo + derruba
+```
+
+Cobre: login PIN, 401 sem token, mapa (12 mesas), abrir pedido, trava de
+1 pedido/mesa (409), rascunho com snapshot de preço, envio com 1 job por
+estação, baixa automática de estoque, KDS avançando item, 403 de RBAC,
+alertas e total do pedido.
+
+### Login / PINs do seed
+
+`POST /auth/pin` com `{ "email": "...", "pin": "1111" }` (ou `usuarioId`).
+Na primeira subida a API converte os `pin_hash` placeholder do seed para
+bcrypt: **Ana 1111 · Bruno 2222 · Carla 3333 · Roberto 4444 · Diego 5555**.
+Use `Authorization: Bearer <access_token>` nas demais rotas.
+
+### Endpoints principais
+
+| Área | Rotas |
+|------|-------|
+| Auth | `POST /auth/pin` · `GET /auth/me` · `POST /auth/pin/trocar` |
+| Usuários (gerente) | `GET/POST /usuarios` · `PATCH /usuarios/:id` · `POST /usuarios/:id/reset-pin` |
+| Cardápio | `GET /estacoes` · `GET/POST /categorias` · `GET /produtos?q=&categoriaId=` · `GET /produtos/:id` (ficha+custo) · `PUT /produtos/:id/ficha` |
+| Estoque | `GET /estoque/saldos` · `GET /estoque/alertas` · `GET/POST /insumos` · `POST /estoque/movimentos` (ENTRADA/AJUSTE/PERDA/CONSUMO — saída de venda é automática) |
+| Mesas | `GET /areas` · `GET /mesas/mapa` · `GET /mesas/:id` · `POST/PATCH /mesas` |
+| **Atendimento** | `POST /pedidos {mesaId}` · `POST /pedidos/:id/itens` (rascunho) · `PATCH/DELETE item` · **`POST /pedidos/:id/enviar {tipo, itemIds}`** (baixa estoque + jobs) · `PATCH .../status` (KDS) · `POST .../cancelar` |
+| Impressão (Fase 2) | `GET /impressao-log?status=PENDENTE` · `GET/PATCH /impressao-log/:id` |
+| Realtime | Socket.IO: `join {rooms: ["mesa:3","cozinha","bar","caixa"]}` → eventos `pedido.enviado`, `item.adicionado`, `item.status`, `mesa.status` |
+
+Papéis (RBAC): `GARCOM · CAIXA · COZINHEIRO · BAR · GERENTE · ADMIN`
+(escritas de cadastro = gerente; KDS = cozinha/bar; salão = garçom/caixa).
+
+### Fluxo do garçom (demo `/demo.html`)
+
+1. Login com PIN → 2. clica mesa LIVRE → Abrir pedido →
+3. lança itens (rascunho, com obs/ponto) → 4. marca itens + tipo da onda →
+**Enviar** → jobs na fila + baixa no estoque + evento no WS.
