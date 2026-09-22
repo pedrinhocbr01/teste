@@ -162,6 +162,78 @@ try {
   const det = await api(`/pedidos/${pid}`, { token });
   check('detalhe soma total', det.status === 200 && Number(det.data.total) > 0, `total=${det.data?.total}`);
 
+  // ---- FASE 3: caixa ----
+  const loginCaixa = await api('/auth/pin', { method: 'POST', body: { email: 'carla@casadofogo.com', pin: '3333' } });
+  const tokCaixa = loginCaixa.data.access_token;
+  const loginGer = await api('/auth/pin', { method: 'POST', body: { email: 'diego@casadofogo.com', pin: '5555' } });
+  const tokGer = loginGer.data.access_token;
+  const abrir = await api('/caixas/abrir', { method: 'POST', token: tokGer, body: { valorInicial: 200 } });
+  check('abrir caixa (fundo 200)', abrir.status === 201 && abrir.data.id, `status=${abrir.status}`);
+  const cxId = abrir.data.id;
+  const abrir2 = await api('/caixas/abrir', { method: 'POST', token: tokGer, body: {} });
+  check('2º caixa mesmo operador → 409', abrir2.status === 409, `status=${abrir2.status}`);
+
+  // ---- FASE 3: imprimir conta + pagamentos parciais ----
+  const conta = await api(`/pedidos/${pid}/imprimir-conta`, { method: 'POST', token });
+  check('imprimir conta cria conta única', conta.data.contas?.length === 1, `status=${conta.status}`);
+  const contaId = conta.data.contas[0].id;
+  const mapa2 = await api('/mesas/mapa', { token });
+  check('mesa foi para AGUARDANDO_CONTA',
+    mapa2.data.find((m) => m.mesa_id === mesaLivre.mesa_id)?.status === 'AGUARDANDO_CONTA');
+  const semCaixa = await api(`/contas/${contaId}/pagamentos`, { method: 'POST', token, body: { forma: 'PIX', valor: 10 } });
+  check('pagto sem caixaId (2 abertos) → 400', semCaixa.status === 400, `status=${semCaixa.status}`);
+  const pg1 = await api(`/contas/${contaId}/pagamentos`, { method: 'POST', token, body: { forma: 'PIX', valor: 30, caixaId: cxId } });
+  check('pagamento parcial PIX 30', pg1.data.resumo?.saldo > 0 && pg1.data.status === 'ABERTA', `saldo=${pg1.data.resumo?.saldo}`);
+  const pgEx = await api(`/contas/${contaId}/pagamentos`, { method: 'POST', token, body: { forma: 'PIX', valor: 20, caixaId: cxId } });
+  check('pagamento acima do saldo → 400', pgEx.status === 400, `status=${pgEx.status}`);
+  const resto = pg1.data.resumo.saldo;
+  const pg2 = await api(`/contas/${contaId}/pagamentos`, { method: 'POST', token, body: { forma: 'DINHEIRO', valor: resto, caixaId: cxId } });
+  check('quitar fecha a conta sozinha', pg2.data.status === 'FECHADA' && pg2.data.resumo?.saldo === 0);
+  const recibo = await api(`/contas/${contaId}/recibo`, { token });
+  check('recibo traz mesa + total', /MESA 1/.test(recibo.data.texto || '') && /TOTAL/.test(recibo.data.texto || ''));
+
+  // ---- FASE 3: fechar pedido libera a mesa ----
+  const fechaCedo = await api(`/pedidos/${pid}/fechar`, { method: 'POST', token: tokCaixa });
+  check('fechar c/ item em produção → 400', fechaCedo.status === 400, `status=${fechaCedo.status}`);
+  for (const st of ['EM_PREPARO', 'PRONTO', 'ENTREGUE']) {
+    await api(`/pedidos/${pid}/itens/${item2.data.id}/status`, { method: 'PATCH', token: tokCoz, body: { status: st } });
+  }
+  const fecha = await api(`/pedidos/${pid}/fechar`, { method: 'POST', token: tokCaixa });
+  check('fechar pedido quitado', fecha.data?.ok === true, JSON.stringify(fecha.data));
+  const mapa3 = await api('/mesas/mapa', { token });
+  check('mesa liberada (LIVRE)', mapa3.data.find((m) => m.mesa_id === mesaLivre.mesa_id)?.status === 'LIVRE');
+
+  // ---- FASE 3: divisão igualitária + estorno ----
+  const pedB = await api('/pedidos', { method: 'POST', token, body: { mesaId: 2 } });
+  const pidB = pedB.data.id;
+  const b1 = await api(`/pedidos/${pidB}/itens`, { method: 'POST', token, body: { produtoId: 1, quantidade: 1 } });
+  const b2 = await api(`/pedidos/${pidB}/itens`, { method: 'POST', token, body: { produtoId: 6, quantidade: 1 } });
+  await api(`/pedidos/${pidB}/enviar`, { method: 'POST', token, body: { tipo: 'LIVRE', itemIds: [b1.data.id, b2.data.id] } });
+  const div = await api(`/pedidos/${pidB}/dividir-igual`, { method: 'POST', token, body: { partes: 2 } });
+  const soma = div.data.reduce((s, c) => s + Math.round(Number(c.valor_rateio) * 100), 0);
+  check('dividir igual: 2 contas somando 50,49', div.data.length === 2 && soma === 5049, `soma=${soma / 100}`);
+  const pgA = await api(`/contas/${div.data[0].id}/pagamentos`, { method: 'POST', token, body: { forma: 'PIX', valor: Number(div.data[0].valor_rateio), caixaId: cxId } });
+  check('parte 1 paga e fecha', pgA.data.status === 'FECHADA');
+  const estorno = await api(`/pagamentos/${pgA.data.pagamentos.find((p) => p.status === 'APROVADO').id}/cancelar`, { method: 'POST', token: tokCaixa, body: { motivo: 'smoke: teste de estorno' } });
+  check('estorno reabre a conta', estorno.data.status === 'ABERTA' && estorno.data.resumo?.saldo > 0);
+  await api(`/contas/${div.data[0].id}/pagamentos`, { method: 'POST', token, body: { forma: 'PIX', valor: Number(div.data[0].valor_rateio), caixaId: cxId } });
+  await api(`/contas/${div.data[1].id}/pagamentos`, { method: 'POST', token, body: { forma: 'CARTAO_CREDITO', valor: Number(div.data[1].valor_rateio), caixaId: cxId } });
+  for (const itemId of [b1.data.id, b2.data.id]) {
+    for (const st of ['EM_PREPARO', 'PRONTO', 'ENTREGUE']) {
+      await api(`/pedidos/${pidB}/itens/${itemId}/status`, { method: 'PATCH', token: tokCoz, body: { status: st } });
+    }
+  }
+  const fechaB = await api(`/pedidos/${pidB}/fechar`, { method: 'POST', token: tokCaixa });
+  check('pedido dividido fecha após quitar tudo', fechaB.data?.ok === true);
+
+  // ---- FASE 3: sangria + fechamento do caixa ----
+  const sang = await api(`/caixas/${cxId}/movimentos`, { method: 'POST', token: tokCaixa, body: { tipo: 'SANGRIA', valor: 50, motivo: 'smoke: sangria de teste' } });
+  check('sangria registrada', sang.data.movimentos?.some((m) => m.tipo === 'SANGRIA' && Number(m.valor) === 50));
+  const detCx = await api(`/caixas/${cxId}`, { token: tokGer });
+  const esperado = detCx.data.resumo.valor_esperado;
+  const fechaCx = await api(`/caixas/${cxId}/fechar`, { method: 'POST', token: tokGer, body: { valorContado: esperado } });
+  check('fechamento bate exato', fechaCx.data.conferencia?.ok === true && fechaCx.data.conferencia?.diferenca === 0, JSON.stringify(fechaCx.data.conferencia));
+
   console.log(falhas === 0 ? '\n✅ SMOKE OK — Fase 1 funcionando' : `\n❌ ${falhas} falha(s)`);
 } catch (e) {
   falhas++;
