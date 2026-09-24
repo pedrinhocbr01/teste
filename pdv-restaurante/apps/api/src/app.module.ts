@@ -8,6 +8,7 @@ import { MesasModule } from './mesas/mesas.module';
 import { AtendimentoModule } from './atendimento/atendimento.module';
 import { ContasModule } from './contas/contas.module';
 import { CaixaModule } from './caixa/caixa.module';
+import { RelatoriosModule } from './relatorios/relatorios.module';
 import { WsModule } from './ws/ws.module';
 import { HealthModule } from './health/health.module';
 
@@ -23,6 +24,7 @@ import { HealthModule } from './health/health.module';
     AtendimentoModule,
     ContasModule,
     CaixaModule,
+    RelatoriosModule,
     HealthModule,
   ],
 })

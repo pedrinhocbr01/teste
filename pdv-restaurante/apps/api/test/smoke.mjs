@@ -456,6 +456,59 @@ try {
     fechaF.data.conferencia?.ok === true && fechaF.data.conferencia?.esperado === detF.data.resumo.valor_esperado_dinheiro,
     JSON.stringify(fechaF.data.conferencia));
 
+  // ---- FASE 5: relatórios gerenciais ----
+  const rel403 = await api('/relatorios/vendas', { token });
+  check('garçom não vê relatórios → 403', rel403.status === 403, `status=${rel403.status}`);
+  const relRuim = await api('/relatorios/vendas?de=2024-13-99', { token: tokGer });
+  check('relatório período inválido → 400', relRuim.status === 400, `status=${relRuim.status}`);
+  const vAntes = await api('/relatorios/vendas', { token: tokGer });
+  const pAntes = await api('/relatorios/produtos', { token: tokGer });
+  const qtdLNantes = pAntes.data.itens.find((x) => x.produto_id === 7)?.qtd ?? 0;
+
+  const cxR = await api('/caixas/abrir', { method: 'POST', token: tokGer, body: { valorInicial: 50 } });
+  const cxRId = cxR.data.id;
+  const mapaR = await api('/mesas/mapa', { token });
+  const mesaR = mapaR.data.find((m) => m.status === 'LIVRE');
+  const pedR = await api('/pedidos', { method: 'POST', token, body: { mesaId: mesaR.mesa_id } });
+  const pidR = pedR.data.id;
+  const r1 = await api(`/pedidos/${pidR}/itens`, { method: 'POST', token, body: { produtoId: 7, quantidade: 2 } });
+  await api(`/pedidos/${pidR}/enviar`, { method: 'POST', token, body: { tipo: 'LIVRE', itemIds: [r1.data.id] } });
+  await api(`/pedidos/${pidR}/itens/${r1.data.id}/status`, { method: 'PATCH', token: tokCoz, body: { status: 'ENTREGUE' } });
+  const contaR = await api(`/pedidos/${pidR}/imprimir-conta`, { method: 'POST', token });
+  const contaRId = contaR.data.contas[0].id;
+  const detR = await api(`/contas/${contaRId}`, { token });
+  const pagoR = detR.data.resumo.saldo;
+  await api(`/contas/${contaRId}/pagamentos`, { method: 'POST', token: tokCaixa, body: { forma: 'DINHEIRO', valor: pagoR, caixaId: cxRId } });
+  await api(`/pedidos/${pidR}/fechar`, { method: 'POST', token: tokCaixa, body: {} });
+
+  const vDepois = await api('/relatorios/vendas', { token: tokGer });
+  const dRec = Math.round((vDepois.data.recebido_total - vAntes.data.recebido_total) * 100) / 100;
+  check('vendas: recebido sobe o valor pago', dRec === pagoR, `delta=${dRec} pago=${pagoR}`);
+  const din = vDepois.data.por_forma.find((f) => f.forma === 'DINHEIRO');
+  const dinA = vAntes.data.por_forma.find((f) => f.forma === 'DINHEIRO');
+  check('vendas: forma DINHEIRO detalhada',
+    Math.round(((din?.valor ?? 0) - (dinA?.valor ?? 0)) * 100) / 100 === pagoR && vDepois.data.por_dia.length > 0);
+  check('vendas: ticket médio coerente',
+    vDepois.data.ticket_medio === Math.round((vDepois.data.recebido_total / vDepois.data.pedidos_fechados) * 100) / 100);
+
+  const pDepois = await api('/relatorios/produtos', { token: tokGer });
+  const ln = pDepois.data.itens.find((x) => x.produto_id === 7);
+  check('ABC: long neck soma +2 un e +R$ 23,80',
+    ln?.qtd - qtdLNantes === 2 && ['A', 'B', 'C'].includes(ln?.classe) && ln?.cmv > 0, `qtd=${ln?.qtd} classe=${ln?.classe} cmv=${ln?.cmv}`);
+  const catR = await api('/relatorios/categorias', { token: tokGer });
+  check('categorias: cervejas soma receita', (catR.data.itens.find((x) => x.categoria === 'Cervejas & Bebidas')?.receita ?? 0) >= 23.8);
+  const gR = await api('/relatorios/garcons', { token: tokGer });
+  const ana = gR.data.itens.find((x) => x.garcom === 'Ana Souza');
+  check('garçons: Ana tem pedido fechado', (ana?.pedidos_fechados ?? 0) >= 1 && ana?.ticket_medio > 0);
+  const mR = await api('/relatorios/mesas', { token: tokGer });
+  const mesaRep = mR.data.itens.find((x) => x.mesa === mesaR.numero);
+  check('mesas: giro da mesa registrada', (mesaRep?.ocupacoes ?? 0) >= 1 && mesaRep?.receita_itens >= 23.8);
+  const cxRep = await api('/relatorios/caixas', { token: tokGer });
+  const turno = cxRep.data.itens.find((x) => x.caixa_id === cxRId);
+  check('caixas: turno vendido = pago', turno?.vendido === pagoR, `vendido=${turno?.vendido}`);
+  const detCR = await api(`/caixas/${cxRId}`, { token: tokGer });
+  await api(`/caixas/${cxRId}/fechar`, { method: 'POST', token: tokGer, body: { valorContado: detCR.data.resumo.valor_esperado_dinheiro } });
+
   // ---- AUDITORIA: trava de força bruta (por último) ----
   for (let i = 0; i < 5; i++) {
     await api('/auth/pin', { method: 'POST', body: { email: 'bruno@casadofogo.com', pin: '0000' } });

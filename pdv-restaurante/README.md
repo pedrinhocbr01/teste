@@ -362,3 +362,28 @@ Caçadas exercitando o fluxo real (abrir → lançar → enviar → pedir conta
   real (pool direto) — escritas via `this.db` dentro de `transaction()`
   fugiam da tx. Agora usam a conexão da tx (com `rawQuery` p/ o PGlite
   não entrar em recursão). Smoke: 96 checks ✔ (13 novos).
+
+## 14. Fase 5 (parte 1) — Relatórios gerenciais (nesta branch)
+
+Módulo `relatorios` (GERENTE/ADMIN), período `?de=&ate=` (default mês
+corrente até hoje), tela `/relatorios.html` linkada nas demais:
+
+- `GET /relatorios/vendas`: recebido (pagamentos aprovados) total, por
+  forma e por dia; pedidos fechados, ticket médio, descontos e serviço.
+- `GET /relatorios/produtos`: curva ABC sobre itens vendidos (pedidos
+  fechados, sem cancelados) — qtd, receita, % acumulado, classe A/B/C,
+  CMV das baixas e margem bruta. `&limite=` (1–200, padrão 50).
+- `GET /relatorios/categorias`: qtd e receita por categoria.
+- `GET /relatorios/garcons`: pedidos, receita dos itens, ticket médio e
+  serviço gerado por garçom.
+- `GET /relatorios/mesas`: giro — ocupações, tempo médio (abertura →
+  fechamento) e receita por mesa.
+- `GET /relatorios/caixas`: turnos iniciados no período — vendido,
+  suprimentos, sangrias e diferença de fechamento por operador.
+
+Convenção: dinheiro = pagamento aprovado (`pago_em`); itens/categorias/
+garçons/mesas = pedidos FECHADOS (`fechado_em`). Smoke: 106 checks ✔
+(10 novos, por delta p/ não depender de dados acumulados).
+
+Restante da Fase 5 (futuro): Pix com QR dinâmico (PSP), multi-filial e
+fiscal (NFC-e/CF-e conforme município/UF).
