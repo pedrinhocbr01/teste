@@ -100,6 +100,9 @@
         </select>
         <button id="btnEnviar">📤 Enviar rascunhos</button>
       </div>
+      <div class="row" style="margin-top:8px">
+        <button id="btnPedirConta" class="ghost">🧾 Pedir conta</button>
+      </div>
       <p class="hint">O envio cria a remessa, dá baixa no estoque (ficha técnica) e gera jobs em /impressao-log.</p>
     </div>
   </section>
@@ -168,7 +171,7 @@ $("loginForm").onsubmit = async (e) => {
   try {
     const r = await api('/auth/pin', { method: 'POST', body: JSON.stringify({ email: $('email').value, pin: $('pin').value }) });
     token = r.access_token; localStorage.setItem('pdv_token', token);
-    setUser(r.usuario); connectWS(); carregarMesas(); log('login ok', r.usuario);
+    setUser(r.usuario); connectWS(); carregarMesas(); carregarProdutos(); log('login ok', r.usuario);
   } catch (err) { alert('Login falhou: ' + err.message); }
 };
 async function carregarProdutos() {
@@ -187,12 +190,16 @@ async function carregarMesas(quiet) {
     d.className = `mesa ${m.status} ${mesaSel?.mesa_id === m.mesa_id ? 'sel' : ''}`;
     d.innerHTML = `<b>Mesa ${m.numero}</b><small>${m.area} · ${m.status}${m.ocupacao_min != null ? ` · ${m.ocupacao_min}min` : ''}${m.garcom ? `<br>${m.garcom}` : ''}</small>`;
     d.onclick = () => {
+      const antiga = mesaSel?.mesa_id;
       mesaSel = m;
       [...$('mesas').children].forEach((c) => c.classList.remove('sel'));
       d.classList.add('sel');
       if (m.pedido_id) carregarPedido(m.pedido_id);
       else { pedidoSel = null; $('pedido').innerHTML = `Mesa ${m.numero} livre — clique em “Abrir pedido”.`; $('addItem').style.display = 'none'; }
-      connectWS();
+      if (socket?.connected && antiga !== m.mesa_id) {
+        if (antiga) socket.emit('leave', { rooms: [`mesa:${antiga}`] });
+        socket.emit('join', { rooms: [`mesa:${m.mesa_id}`] });
+      } else if (!socket?.connected) connectWS();
     };
     $('mesas').appendChild(d);
   }
@@ -227,6 +234,7 @@ $('itemForm').onsubmit = async (e) => {
   } catch (err) { alert(err.message); }
 };
 $('btnEnviar').onclick = async () => {
+  if (!pedidoSel) return alert('Selecione uma mesa com pedido.');
   const ids = [...document.querySelectorAll('.pick:checked')].map((c) => Number(c.value));
   if (!ids.length) return alert('Marque ao menos 1 item em RASCUNHO.');
   try {
@@ -234,6 +242,14 @@ $('btnEnviar').onclick = async () => {
       body: JSON.stringify({ tipo: $('tipoRemessa').value, itemIds: ids }) });
     log('envio ok', { remessa: r.remessa.id, jobs: r.jobs.length });
     carregarPedido(pedidoSel); carregarFila(); carregarMesas(true);
+  } catch (e) { alert(e.message); }
+};
+$('btnPedirConta').onclick = async () => {
+  if (!pedidoSel) return alert('Selecione uma mesa com pedido.');
+  try {
+    const r = await api(`/pedidos/${pedidoSel}/imprimir-conta`, { method: 'POST', body: '{}' });
+    log('conta pedida', { contas: r.contas.length });
+    carregarPedido(pedidoSel); carregarMesas(true);
   } catch (e) { alert(e.message); }
 };
 $('btnAbrir').onclick = async () => {

@@ -124,11 +124,25 @@ export class CaixaService {
     const cx = await this.db.queryOne<any>(`SELECT * FROM caixa WHERE id = $1`, [id]);
     if (!cx) throw new NotFoundException('Caixa não encontrado');
     if (cx.status !== 'ABERTO') throw new BadRequestException('Caixa fechado — não aceita movimentos');
-    const rows = await this.db.query(
-      `INSERT INTO caixa_movimento (caixa_id, tipo, valor, motivo, usuario_id)
-       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [id, dto.tipo, dto.valor, dto.motivo, userId],
-    );
+    const rows = await this.db.transaction(async (q) => {
+      await q(`SELECT id FROM caixa WHERE id = $1 FOR UPDATE`, [id]);
+      if (dto.tipo === 'SANGRIA') {
+        const r = await this.db.queryOne<any>(
+          `SELECT valor_esperado_dinheiro FROM vw_caixa_resumo WHERE caixa_id = $1`,
+          [id],
+        );
+        if (toCents(dto.valor) > toCents(r?.valor_esperado_dinheiro)) {
+          throw new BadRequestException(
+            `Sangria de R$ ${br(dto.valor)} excede o esperado em espécie (R$ ${br(r?.valor_esperado_dinheiro ?? 0)})`,
+          );
+        }
+      }
+      return this.db.query(
+        `INSERT INTO caixa_movimento (caixa_id, tipo, valor, motivo, usuario_id)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [id, dto.tipo, dto.valor, dto.motivo, userId],
+      );
+    });
     const det = await this.detalhar(id);
     this.ws.emitToRooms(['caixa'], 'caixa.movimento', {
       caixaId: id,
@@ -146,7 +160,9 @@ export class CaixaService {
       throw new ForbiddenException('Caixa de outro operador — só gerente fecha');
     }
     const r = await this.db.queryOne<any>(`SELECT * FROM vw_caixa_resumo WHERE caixa_id = $1`, [id]);
-    const esperadoCents = toCents(r?.valor_esperado);
+    // a conferência é da GAVETA (fundo + dinheiro − trocos ± movimentos);
+    // PIX/cartão não estão na gaveta — conferem pelo extrato da adquirente
+    const esperadoCents = toCents(r?.valor_esperado_dinheiro);
     const contadoCents = toCents(dto.valorContado);
     const diferenca = toReais(contadoCents - esperadoCents);
     await this.db.execute(
@@ -168,6 +184,7 @@ export class CaixaService {
       ...det,
       conferencia: {
         esperado: toReais(esperadoCents),
+        esperado_total: toReais(toCents(r?.valor_esperado)),
         contado: toReais(contadoCents),
         diferenca,
         ok: diferenca === 0,

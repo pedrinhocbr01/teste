@@ -326,3 +326,39 @@ do zero (PGlite/dev já faz isso sozinho).
   Período default = mês corrente até hoje.
 - Tela `/estoque.html`: recebimento, saldos, inventário, CMV, perdas e
   custo do prato (linkada em demo/KDS/caixa). Smoke: 83 checks ✔.
+
+## 13. Correções garçom/mesa/caixa (nesta branch)
+
+Caçadas exercitando o fluxo real (abrir → lançar → enviar → pedir conta
+→ pagar → fechar) e confirmadas antes/depois no preview:
+
+### Conta (a principal)
+- Item lançado **depois** de pedir a conta sumia: o 2º "pedir conta"
+  ignorava as sobras e o `fechar` travava a mesa ("sem conta cobrindo").
+  Agora o `imprimir-conta` aloca as sobras na conta única aberta, ou abre
+  uma conta nova só com elas quando a divisão é múltipla/rateio.
+- Novo `POST /contas/:id/alocar-pendentes` (botão "＋ alocar pendentes"
+  no caixa) p/ encher conta avulsa/rateio manual; hint que mandava alocar
+  "na demo do garçom" (onde não há alocação) corrigida.
+
+### Caixa
+- `fechar` comparava o contado na **gaveta** com o esperado **total**
+  (PIX/cartão juntos) → "falta" fantasma em todo dia com PIX. Agora
+  confere contra `valor_esperado_dinheiro` e mostra o total geral como
+  referência (`conferencia.esperado_total`); UI deixa claro que o contado
+  é a espécie da gaveta.
+- Sangria limitada ao esperado em espécie (com lock); serviço (10%) e
+  desconto editáveis na tela (gorjeta é facultativa); botão "Fechar
+  conta" quando o saldo zera; refresh por WS não apaga mais digitação.
+
+### Garçom/mesa
+- `demo.html`: produtos não carregavam após o login (select vazio →
+  impossível lançar item); botão "🧾 Pedir conta" no pedido; troca de
+  mesa via WS `leave`/`join` sem reconectar o socket; guards de envio.
+- `GET /pedidos?status=` e `?mesaId=` inválidos davam 500 → 400.
+
+### Produção (invisível no preview)
+- `DbService.query/execute` ignoravam a transação corrente no Postgres
+  real (pool direto) — escritas via `this.db` dentro de `transaction()`
+  fugiam da tx. Agora usam a conexão da tx (com `rawQuery` p/ o PGlite
+  não entrar em recursão). Smoke: 96 checks ✔ (13 novos).

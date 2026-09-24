@@ -75,6 +75,23 @@ export class PdvGateway implements OnGatewayInit {
     return negadas.length ? { joined, negadas } : { joined };
   }
 
+  /** Sai de salas (a demo do garçom troca de mesa sem reconectar). */
+  @SubscribeMessage('leave')
+  handleLeave(
+    @MessageBody() data: { rooms?: string[] },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const rooms = Array.isArray(data?.rooms) ? data.rooms.slice(0, 20) : [];
+    const left: string[] = [];
+    for (const r of rooms) {
+      if (typeof r === 'string' && /^[a-z0-9:_-]{1,40}$/i.test(r)) {
+        client.leave(r);
+        left.push(r);
+      }
+    }
+    return { left };
+  }
+
   emitToRooms(rooms: string[], event: string, payload: any) {
     if (!this.server) return;
     for (const r of rooms) this.server.to(r).emit(event, payload);

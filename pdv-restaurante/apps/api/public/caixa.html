@@ -125,6 +125,7 @@ function connectWS() {
 // ---- caixa ----
 async function carregarCaixa(quiet) {
   if (!token) return;
+  if (quiet && document.activeElement && $('caixaBox').contains(document.activeElement)) return; // digitando: não re-renderiza
   try {
     const mine = await api('/caixas/meu-aberto');
     if (!mine) {
@@ -158,7 +159,7 @@ async function carregarCaixa(quiet) {
         <input id="movValor" type="number" min="0.01" step="0.01" placeholder="Valor" />
       </div><input id="movMotivo" placeholder="Motivo (obrigatório)" /><button class="warn" type="submit">Lançar</button></form>
       <form id="fecharForm" style="margin-top:8px"><div class="row">
-        <input id="contado" type="number" min="0" step="0.01" placeholder="Valor contado" />
+        <input id="contado" type="number" min="0" step="0.01" placeholder="Contado na gaveta (espécie)" />
         <button class="ok" type="submit">Fechar caixa</button></div></form>
       <div id="log"></div>`;
     $('movForm').onsubmit = async (e) => {
@@ -170,7 +171,7 @@ async function carregarCaixa(quiet) {
       e.preventDefault();
       try {
         const f = await api(`/caixas/${d.id}/fechar`, { method: 'POST', body: JSON.stringify({ valorContado: Number($('contado').value }) });
-        alert(f.conferencia.mensagem + `\nEsperado ${R$(f.conferencia.esperado)} · Contado ${R$(f.conferencia.contado)}`);
+        alert(f.conferencia.mensagem + `\nGaveta esperada ${R$(f.conferencia.esperado)} · Contado ${R$(f.conferencia.contado)}` + (f.conferencia.esperado_total != null ? `\n(Total geral ${R$(f.conferencia.esperado_total)} — PIX/cartão conferem no extrato)` : ''));
         carregarCaixa();
       } catch (e2) { alert(e2.message); }
     };
@@ -225,7 +226,7 @@ async function carregarConta(id, quiet) {
     const c = await api(`/contas/${id}`);
     const itens = c.valor_rateio != null
       ? `<tr><td>Rateio fixo</td><td class="num">${R$(c.valor_rateio)}</td></tr>`
-      : c.itens.map((i) => `<tr><td>${i.quantidade}x ${i.produto}</td><td class="num">${R$(i.quantidade * i.preco_unitario)}</td></tr>`).join('') || '<tr><td colspan="2" class="hint">Sem itens — aloque na demo do garçom ou cancele e use “Pedir conta”.</td></tr>';
+      : c.itens.map((i) => `<tr><td>${i.quantidade}x ${i.produto}</td><td class="num">${R$(i.quantidade * i.preco_unitario)}</td></tr>`).join('') || '<tr><td colspan="2" class="hint">Sem itens — use “＋ alocar pendentes” ou “Pedir conta”.</td></tr>';
     const pgs = c.pagamentos.map((p) => `<tr><td>${p.forma.replace(/_/g, ' ')} <span class="tag">${p.status}</span></td><td class="num">${R$(p.valor)}${p.valor_troco ? ` (troco ${R$(p.valor_troco)})` : ''}</td>
       <td>${p.status === 'APROVADO' ? `<button class="ghost" onclick="estornar(${p.id})">estornar</button>` : ''}</td></tr>`).join('');
     $('conta').innerHTML = `
@@ -242,7 +243,13 @@ async function carregarConta(id, quiet) {
         <div class="row"><input id="pgTroco" type="number" min="0" step="0.01" placeholder="Troco (só dinheiro)" /><input id="pgRef" placeholder="Referência (PIX/aut)" /></div>
         <button class="ok" type="submit">Receber</button></form>` : '<p class="hint">Conta ' + c.status.toLowerCase() + '.</p>'}
       ${pgs ? `<h2 style="margin-top:8px">Pagamentos</h2><table>${pgs}</table>` : ''}
-      <div class="row" style="margin-top:8px"><button class="ghost" id="btnRecibo">🧾 Recibo</button></div>
+      ${c.status === 'ABERTA' ? `<div class="row" style="margin-top:8px">
+        <button class="ghost" id="btnServ">${c.incluir_servico ? '− sem os 10%' : '+ com os 10%'}</button>
+        <button class="ghost" id="btnDesc">% Desconto${c.desconto_valor ? ` (${R$(c.desconto_valor)})` : ''}</button>
+      </div>` : ''}
+      <div class="row" style="margin-top:8px"><button class="ghost" id="btnRecibo">🧾 Recibo</button>
+      ${c.status === 'ABERTA' && c.valor_rateio == null ? '<button class="ghost" id="btnAlocar">＋ alocar pendentes</button>' : ''}
+      ${c.status === 'ABERTA' && c.resumo.saldo === 0 ? '<button class="ok" id="btnFecharConta">✅ Fechar conta</button>' : ''}</div>
       <div id="reciboBox"></div>`;
     const form = $('pgForm');
     if (form) form.onsubmit = async (e) => {
@@ -254,6 +261,24 @@ async function carregarConta(id, quiet) {
           ...(caixaId ? { caixaId } : {}) }) });
         carregarConta(id); carregarContas(); carregarCaixa(true);
       } catch (e2) { alert(e2.message); }
+    };
+    if ($('btnServ')) $('btnServ').onclick = async () => {
+      try { await api(`/contas/${id}`, { method: 'PATCH', body: JSON.stringify({ incluirServico: !c.incluir_servico }) }); carregarConta(id); carregarContas(); }
+      catch (e2) { alert(e2.message); }
+    };
+    if ($('btnDesc')) $('btnDesc').onclick = async () => {
+      const v = prompt('Desconto em R$ (0 p/ remover):', String(c.desconto_valor || 0));
+      if (v === null) return;
+      try { await api(`/contas/${id}`, { method: 'PATCH', body: JSON.stringify({ descontoValor: Number(v) }) }); carregarConta(id); carregarContas(); }
+      catch (e2) { alert(e2.message); }
+    };
+    if ($('btnAlocar')) $('btnAlocar').onclick = async () => {
+      try { await api(`/contas/${id}/alocar-pendentes`, { method: 'POST', body: '{}' }); carregarConta(id); carregarContas(); }
+      catch (e2) { alert(e2.message); }
+    };
+    if ($('btnFecharConta')) $('btnFecharConta').onclick = async () => {
+      try { await api(`/contas/${id}/fechar`, { method: 'POST', body: '{}' }); carregarConta(id); carregarContas(); carregarMesas(true); }
+      catch (e2) { alert(e2.message); }
     };
     $('btnRecibo').onclick = async () => {
       const r = await api(`/contas/${id}/recibo`);

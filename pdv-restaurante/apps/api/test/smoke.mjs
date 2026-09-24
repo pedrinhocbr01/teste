@@ -259,7 +259,7 @@ try {
   check('pagamento parcial no caixa 1 (seed)', pgC.data.resumo?.saldo > 0, `saldo=${pgC.data.resumo?.saldo}`);
   const detCx1 = await api('/caixas/1', { token: tokCaixa });
   check('resumo traz esperado em dinheiro', detCx1.data.resumo?.valor_esperado_dinheiro > 0, `esp_din=${detCx1.data.resumo?.valor_esperado_dinheiro}`);
-  const fechaCx1 = await api('/caixas/1/fechar', { method: 'POST', token: tokCaixa, body: { valorContado: detCx1.data.resumo.valor_esperado } });
+  const fechaCx1 = await api('/caixas/1/fechar', { method: 'POST', token: tokCaixa, body: { valorContado: detCx1.data.resumo.valor_esperado_dinheiro } });
   check('caixa 1 fecha exato', fechaCx1.data.conferencia?.ok === true);
   const pgCId = pgC.data.pagamentos.find((p) => p.status === 'APROVADO').id;
   const estFechado = await api(`/pagamentos/${pgCId}/cancelar`, { method: 'POST', token: tokCaixa, body: {} });
@@ -294,7 +294,7 @@ try {
   const sang = await api(`/caixas/${cxId}/movimentos`, { method: 'POST', token: tokCaixa, body: { tipo: 'SANGRIA', valor: 50, motivo: 'smoke: sangria de teste' } });
   check('sangria registrada', sang.data.movimentos?.some((m) => m.tipo === 'SANGRIA' && Number(m.valor) === 50));
   const detCx = await api(`/caixas/${cxId}`, { token: tokGer });
-  const esperado = detCx.data.resumo.valor_esperado;
+  const esperado = detCx.data.resumo.valor_esperado_dinheiro;
   const fechaCx = await api(`/caixas/${cxId}/fechar`, { method: 'POST', token: tokGer, body: { valorContado: esperado } });
   check('fechamento bate exato', fechaCx.data.conferencia?.ok === true && fechaCx.data.conferencia?.diferenca === 0, JSON.stringify(fechaCx.data.conferencia));
 
@@ -375,6 +375,86 @@ try {
   const m100 = await api('/produtos?margemAbaixoDe=100', { token: tokGer });
   check('filtro margemAbaixoDe', m30.status === 200 && m30.data.every((p) => Number(p.margem_pct) < 30) && m100.data.length >= m30.data.length,
     `n30=${m30.data.length} n100=${m100.data.length}`);
+
+  // ---- FIXES: garçom/mesa/caixa ----
+  const stRuim = await api('/pedidos?status=LIXO', { token });
+  check('filtro status inválido → 400', stRuim.status === 400, `status=${stRuim.status}`);
+  const mesaRuim = await api('/pedidos?mesaId=abc', { token });
+  check('filtro mesaId inválido → 400', mesaRuim.status === 400, `status=${mesaRuim.status}`);
+
+  const cxF = await api('/caixas/abrir', { method: 'POST', token: tokGer, body: { valorInicial: 100 } });
+  const cxFId = cxF.data.id;
+  const mapaF = await api('/mesas/mapa', { token });
+  const livresF = mapaF.data.filter((m) => m.status === 'LIVRE');
+
+  // pedido A: item lançado DEPOIS da conta entra no 2º "pedir conta"
+  const pedA = await api('/pedidos', { method: 'POST', token, body: { mesaId: livresF[0].mesa_id } });
+  const pidA = pedA.data.id;
+  const a1 = await api(`/pedidos/${pidA}/itens`, { method: 'POST', token, body: { produtoId: 7, quantidade: 2 } });
+  await api(`/pedidos/${pidA}/enviar`, { method: 'POST', token, body: { tipo: 'LIVRE', itemIds: [a1.data.id] } });
+  const contaA1 = await api(`/pedidos/${pidA}/imprimir-conta`, { method: 'POST', token });
+  const contaAId = contaA1.data.contas[0].id;
+  const totA1 = contaA1.data.contas[0].total;
+  const a2 = await api(`/pedidos/${pidA}/itens`, { method: 'POST', token, body: { produtoId: 8, quantidade: 1 } });
+  await api(`/pedidos/${pidA}/enviar`, { method: 'POST', token, body: { tipo: 'LIVRE', itemIds: [a2.data.id] } });
+  const contaA2 = await api(`/pedidos/${pidA}/imprimir-conta`, { method: 'POST', token });
+  check('2º pedir-conta aloca item novo na conta única',
+    contaA2.data.contas.length === 1 && contaA2.data.contas[0].total > totA1, `total=${contaA2.data.contas[0]?.total}`);
+  for (const it of [a1.data.id, a2.data.id]) {
+    await api(`/pedidos/${pidA}/itens/${it}/status`, { method: 'PATCH', token: tokCoz, body: { status: 'ENTREGUE' } });
+  }
+  const detA = await api(`/contas/${contaAId}`, { token });
+  const pgFA = await api(`/contas/${contaAId}/pagamentos`, { method: 'POST', token: tokCaixa, body: { forma: 'PIX', valor: detA.data.resumo.saldo, caixaId: cxFId } });
+  check('conta quitada no PIX', pgFA.data.status === 'FECHADA');
+  const fechaA = await api(`/pedidos/${pidA}/fechar`, { method: 'POST', token: tokCaixa, body: {} });
+  check('pedido fecha com item pós-conta coberto', fechaA.data?.ok === true, JSON.stringify(fechaA.data).slice(0, 120));
+
+  // pedido B: divisão igual + item novo → conta nova só com as sobras
+  const pedFB = await api('/pedidos', { method: 'POST', token, body: { mesaId: livresF[1].mesa_id } });
+  const pidFB = pedFB.data.id;
+  const fb1 = await api(`/pedidos/${pidFB}/itens`, { method: 'POST', token, body: { produtoId: 7, quantidade: 2 } });
+  await api(`/pedidos/${pidFB}/enviar`, { method: 'POST', token, body: { tipo: 'LIVRE', itemIds: [fb1.data.id] } });
+  await api(`/pedidos/${pidFB}/dividir-igual`, { method: 'POST', token, body: { partes: 2 } });
+  const fb2 = await api(`/pedidos/${pidFB}/itens`, { method: 'POST', token, body: { produtoId: 8, quantidade: 1 } });
+  await api(`/pedidos/${pidFB}/enviar`, { method: 'POST', token, body: { tipo: 'LIVRE', itemIds: [fb2.data.id] } });
+  const contaB = await api(`/pedidos/${pidFB}/imprimir-conta`, { method: 'POST', token });
+  const contasB = await api(`/pedidos/${pidFB}/contas`, { token });
+  const novaB = contasB.data.find((c) => c.status === 'ABERTA' && c.valor_rateio == null);
+  check('item pós-divisão ganha conta própria', contaB.data.contas.length === 3 && novaB?.total > 0, `contas=${contaB.data.contas.length}`);
+  for (const it of [fb1.data.id, fb2.data.id]) {
+    await api(`/pedidos/${pidFB}/itens/${it}/status`, { method: 'PATCH', token: tokCoz, body: { status: 'ENTREGUE' } });
+  }
+  for (const c of contasB.data.filter((c) => c.status === 'ABERTA')) {
+    await api(`/contas/${c.id}/pagamentos`, { method: 'POST', token: tokCaixa, body: { forma: 'DINHEIRO', valor: c.saldo, caixaId: cxFId } });
+  }
+  const fechaFB = await api(`/pedidos/${pidFB}/fechar`, { method: 'POST', token: tokCaixa, body: {} });
+  check('pedido dividido fecha após pagar as 3 contas', fechaFB.data?.ok === true);
+
+  // pedido C: conta avulsa vazia + alocar-pendentes + tirar os 10%
+  const pedC2 = await api('/pedidos', { method: 'POST', token, body: { mesaId: livresF[2].mesa_id } });
+  const pidC2 = pedC2.data.id;
+  const c2 = await api(`/pedidos/${pidC2}/itens`, { method: 'POST', token, body: { produtoId: 7, quantidade: 1 } });
+  await api(`/pedidos/${pidC2}/enviar`, { method: 'POST', token, body: { tipo: 'LIVRE', itemIds: [c2.data.id] } });
+  const novaC = await api(`/pedidos/${pidC2}/contas`, { method: 'POST', token, body: { descricao: 'Avulsa' } });
+  const alocC = await api(`/contas/${novaC.data.id}/alocar-pendentes`, { method: 'POST', token });
+  check('alocar-pendentes enche a conta avulsa', alocC.data.resumo?.total > 0 && alocC.data.itens?.length === 1);
+  const semServ = await api(`/contas/${novaC.data.id}`, { method: 'PATCH', token, body: { incluirServico: false } });
+  check('tirar os 10% recalcula', semServ.data.resumo?.servico_valor === 0, `total=${semServ.data.resumo?.total}`);
+  await api(`/pedidos/${pidC2}/itens/${c2.data.id}/status`, { method: 'PATCH', token: tokCoz, body: { status: 'ENTREGUE' } });
+  await api(`/contas/${novaC.data.id}/pagamentos`, { method: 'POST', token: tokCaixa, body: { forma: 'DINHEIRO', valor: semServ.data.resumo.saldo, caixaId: cxFId } });
+  const fechaC2 = await api(`/pedidos/${pidC2}/fechar`, { method: 'POST', token: tokCaixa, body: {} });
+  check('pedido C fecha', fechaC2.data?.ok === true);
+
+  // caixa: sangria limitada à gaveta; fechamento confere a gaveta
+  const sangAlta = await api(`/caixas/${cxFId}/movimentos`, { method: 'POST', token: tokCaixa, body: { tipo: 'SANGRIA', valor: 99999, motivo: 'teste' } });
+  check('sangria acima da gaveta → 400', sangAlta.status === 400, `status=${sangAlta.status}`);
+  const detF = await api(`/caixas/${cxFId}`, { token: tokGer });
+  check('gaveta exclui o PIX', detF.data.resumo.valor_esperado_dinheiro < detF.data.resumo.valor_esperado,
+    `gav=${detF.data.resumo.valor_esperado_dinheiro} tot=${detF.data.resumo.valor_esperado}`);
+  const fechaF = await api(`/caixas/${cxFId}/fechar`, { method: 'POST', token: tokGer, body: { valorContado: detF.data.resumo.valor_esperado_dinheiro } });
+  check('fechamento confere a gaveta exata',
+    fechaF.data.conferencia?.ok === true && fechaF.data.conferencia?.esperado === detF.data.resumo.valor_esperado_dinheiro,
+    JSON.stringify(fechaF.data.conferencia));
 
   // ---- AUDITORIA: trava de força bruta (por último) ----
   for (let i = 0; i < 5; i++) {

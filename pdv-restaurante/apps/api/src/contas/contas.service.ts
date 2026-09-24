@@ -337,6 +337,27 @@ export class ContasService {
     });
   }
 
+  /**
+   * Aloca na conta todos os itens enviados ainda sem cobertura (atalho p/
+   * "Nova conta" + rateios manuais). Somar itens nunca quebra o já pago
+   * (só aumenta o saldo), então vale mesmo com pagamento parcial.
+   */
+  async alocarPendentes(contaId: number) {
+    return this.db.transaction(async (q) => {
+      const conta = await this.contaEditavel(contaId);
+      await this.lockPedido(q, conta.pedido_id);
+      if (conta.valor_rateio !== null && conta.valor_rateio !== undefined) {
+        throw new BadRequestException('Conta de rateio (valor fixo) não recebe itens');
+      }
+      const sobras = await this.itensSemCobertura(conta.pedido_id);
+      if (!sobras.length) throw new BadRequestException('Nada pendente — todos os itens já estão em contas');
+      for (const e of sobras) {
+        await this.alocarItem(contaId, { pedidoItemId: e.id, quantidade: e.restante });
+      }
+      return this.detalhar(contaId);
+    });
+  }
+
   // ---------- divisão igualitária ----------
 
   async dividirIgual(pedidoId: number, dto: DividirIgualDto) {
@@ -418,9 +439,27 @@ export class ContasService {
 
   // ---------- "fecha a conta, por favor" ----------
 
+  /** Itens enviados com quantidade ainda sem cobertura em conta válida. */
+  private async itensSemCobertura(pedidoId: number): Promise<{ id: number; restante: number }[]> {
+    const rows = await this.db.query<any>(
+      `SELECT pi.id, pi.quantidade - COALESCE(
+         (SELECT SUM(ci.quantidade) FROM conta_item ci
+          JOIN conta c ON c.id = ci.conta_id
+          WHERE ci.pedido_item_id = pi.id AND c.status <> 'CANCELADA'), 0) AS restante
+       FROM pedido_item pi
+       WHERE pi.pedido_id = $1 AND pi.status NOT IN ('RASCUNHO','CANCELADO')`,
+      [pedidoId],
+    );
+    return rows
+      .filter((e: any) => Number(e.restante) > 0.0005)
+      .map((e: any) => ({ id: Number(e.id), restante: Number(e.restante) }));
+  }
+
   /**
-   * Garçom/caixa pede a conta: valida rascunhos, cria a conta única com todos
-   * os itens (se ainda não houver aberta) e põe a mesa em AGUARDANDO_CONTA.
+   * Garçom/caixa pede a conta: valida rascunhos, garante que todo item
+   * enviado está em alguma conta (cria a conta única; se já houver UMA
+   * aberta por item, soma as sobras nela; se a divisão é múltipla/rateio,
+   * abre uma conta nova só com as sobras) e põe a mesa em AGUARDANDO_CONTA.
    */
   async imprimirConta(pedidoId: number) {
     return this.db.transaction(async (q) => {
@@ -435,28 +474,32 @@ export class ContasService {
           'Há itens em rascunho — envie para produção ou remova antes de pedir a conta',
         );
       }
+      const mesa = await this.db.queryOne<any>(
+        `SELECT numero FROM mesa WHERE id = $1`, [pedido.mesa_id],
+      );
+      const etiqueta = `Conta — Mesa ${mesa?.numero ?? pedido.mesa_id}`;
       let contas = await this.listarPorPedido(pedidoId);
-      const abertas = contas.filter((c: any) => c.status === 'ABERTA');
-      if (!abertas.length) {
-        const elegiveis = await this.db.query<any>(
-          `SELECT pi.id, pi.quantidade - COALESCE(
-             (SELECT SUM(ci.quantidade) FROM conta_item ci
-              JOIN conta c ON c.id = ci.conta_id
-              WHERE ci.pedido_item_id = pi.id AND c.status <> 'CANCELADA'), 0) AS restante
-           FROM pedido_item pi
-           WHERE pi.pedido_id = $1 AND pi.status NOT IN ('RASCUNHO','CANCELADO')`,
-          [pedidoId],
-        );
-        const comSaldo = elegiveis.filter((e: any) => Number(e.restante) > 0.0005);
-        if (!comSaldo.length) {
+      const abertas = () => contas.filter((c: any) => c.status === 'ABERTA');
+      const sobras = await this.itensSemCobertura(pedidoId);
+      if (!abertas().length) {
+        if (!sobras.length) {
           throw new BadRequestException('Pedido sem itens para conta (tudo cancelado?)');
         }
-        const mesa = await this.db.queryOne<any>(
-          `SELECT numero FROM mesa WHERE id = $1`, [pedido.mesa_id],
-        );
-        const nova = await this.criar(pedidoId, { descricao: `Conta — Mesa ${mesa?.numero ?? pedido.mesa_id}` });
-        for (const e of comSaldo) {
-          await this.alocarItem(nova.id, { pedidoItemId: Number(e.id), quantidade: Number(e.restante) });
+        const nova = await this.criar(pedidoId, { descricao: etiqueta });
+        for (const e of sobras) {
+          await this.alocarItem(nova.id, { pedidoItemId: e.id, quantidade: e.restante });
+        }
+        contas = await this.listarPorPedido(pedidoId);
+      } else if (sobras.length) {
+        // itens lançados DEPOIS do primeiro "pedir conta": nunca somem —
+        // conta única recebe as sobras; divisão múltipla ganha conta nova
+        const unica = abertas().length === 1 ? abertas()[0] : null;
+        const alvo =
+          unica && unica.valor_rateio == null
+            ? unica
+            : await this.criar(pedidoId, { descricao: `${etiqueta} (itens após a conta)` });
+        for (const e of sobras) {
+          await this.alocarItem(alvo.id, { pedidoItemId: e.id, quantidade: e.restante });
         }
         contas = await this.listarPorPedido(pedidoId);
       }

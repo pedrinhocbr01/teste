@@ -121,6 +121,15 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
   }
 
   async query<T = any>(sql: string, params: any[] = []): Promise<T[]> {
+    // dentro de transaction(): usa a conexão da tx (no pg real o pool
+    // direto fugiria da transação — bug de atomicidade em produção)
+    const store = this.txStore.getStore();
+    if (store) return (await store.q(sql, params)) as T[];
+    return this.rawQuery<T>(sql, params);
+  }
+
+  /** Query fora de transação (ou a implementação crua dentro dela). */
+  private async rawQuery<T = any>(sql: string, params: any[] = []): Promise<T[]> {
     if (!this.usePglite) {
       const res = await this.pool!.query(sql, params);
       return res.rows as T[];
@@ -137,6 +146,11 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
   /** Para INSERT/UPDATE/DELETE — retorna linhas afetadas. */
   async execute(sql: string, params: any[] = []): Promise<number> {
     if (!this.usePglite) {
+      const store = this.txStore.getStore();
+      if (store?.client) {
+        const res = await store.client.query(sql, params);
+        return res.rowCount ?? 0;
+      }
       const res = await this.pool!.query(sql, params);
       return res.rowCount ?? 0;
     }
@@ -151,7 +165,7 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
    */
   private txQueue: Promise<unknown> = Promise.resolve();
   /** Transação "corrente" (p/ transaction() aninhada entrar na tx de fora). */
-  private txStore = new AsyncLocalStorage<{ q: QueryFn }>();
+  private txStore = new AsyncLocalStorage<{ q: QueryFn; client?: any }>();
 
   async transaction<T>(fn: (q: QueryFn) => Promise<T>): Promise<T> {
     const nested = this.txStore.getStore();
@@ -163,7 +177,7 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
         await client.query('BEGIN');
         const q: QueryFn = async (sql, params = []) =>
           (await client.query(sql, params)).rows;
-        const result = await this.txStore.run({ q }, () => fn(q));
+        const result = await this.txStore.run({ q, client }, () => fn(q));
         await client.query('COMMIT');
         return result;
       } catch (e) {
@@ -185,7 +199,8 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async pgliteTx<T>(fn: (q: QueryFn) => Promise<T>): Promise<T> {
-    const q: QueryFn = (sql, params = []) => this.query(sql, params);
+    // rawQuery: this.query chamaria store.q de volta (recursão infinita)
+    const q: QueryFn = (sql, params = []) => this.rawQuery(sql, params);
     return this.txStore.run({ q }, async () => {
       await q('BEGIN');
       try {

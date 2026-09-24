@@ -98,6 +98,12 @@ export class ContasController {
   }
 
   @Roles(...SALAO)
+  @Post('contas/:id/alocar-pendentes')
+  alocarPendentes(@Param('id', ParseIntPipe) id: number) {
+    return this.contas.alocarPendentes(id);
+  }
+
+  @Roles(...SALAO)
   @Delete('contas/:id/itens/:alocId')
   removerAlocacao(
     @Param('id', ParseIntPipe) id: number,

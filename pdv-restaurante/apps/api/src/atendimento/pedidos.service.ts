@@ -23,10 +23,16 @@ export class PedidosService {
   ) {}
 
   async listar(status?: string, mesaId?: number) {
+    if (status && !['ABERTO', 'FECHADO', 'CANCELADO'].includes(status.toUpperCase())) {
+      throw new BadRequestException('status deve ser ABERTO, FECHADO ou CANCELADO');
+    }
+    if (mesaId !== undefined && !Number.isInteger(mesaId)) {
+      throw new BadRequestException('mesaId deve ser um número');
+    }
     const where: string[] = [];
     const params: any[] = [];
     if (status) {
-      params.push(status);
+      params.push(status.toUpperCase());
       where.push(`p.status = $${params.length}`);
     }
     if (mesaId) {
