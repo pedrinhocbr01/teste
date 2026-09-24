@@ -92,6 +92,10 @@ export class CardapioService {
       params.push(`%${q.q}%`);
       where.push(`p.nome ILIKE $${params.length}`);
     }
+    if (q.margemAbaixoDe !== undefined) {
+      params.push(q.margemAbaixoDe);
+      where.push(`cp.margem_pct < $${params.length}`);
+    }
     const rows = await this.db.query<any>(
       `SELECT p.id, p.nome, p.descricao, p.categoria_id, c.nome AS categoria,
               p.preco, p.estacao_id, p.insumo_vinculado_id, p.unidade_porcao, p.ativo,
@@ -131,7 +135,7 @@ export class CardapioService {
     let itens: any[] = [];
     if (ficha) {
       itens = await this.db.query(
-        `SELECT fti.*, i.nome AS insumo_nome, um.sigla AS unidade
+        `SELECT fti.*, i.nome AS insumo_nome, um.sigla AS unidade, i.custo_unitario
          FROM ficha_tecnica_item fti
          JOIN insumo i ON i.id = fti.insumo_id
          JOIN unidade_medida um ON um.id = i.unidade_estoque_id
@@ -143,7 +147,7 @@ export class CardapioService {
       ...produto,
       preco: num(produto.preco),
       ficha: ficha
-        ? { ...ficha, rendimento: num(ficha.rendimento), itens: itens.map((i) => ({ ...i, quantidade: num(i.quantidade), perca_pct: num(i.perca_pct) })) }
+        ? { ...ficha, rendimento: num(ficha.rendimento), itens: itens.map((i) => ({ ...i, quantidade: num(i.quantidade), perca_pct: num(i.perca_pct), custo_unitario: num(i.custo_unitario) })) }
         : null,
     };
   }
@@ -234,5 +238,68 @@ export class CardapioService {
       }
       return this.detalharProduto(produtoId);
     });
+  }
+
+  /**
+   * Custo-margem detalhado do prato (Fase 4): cada ingrediente com
+   * quantidade líquida → bruta (perca) → custo, totais e margem.
+   * Mesma fórmula da baixa de estoque e da vw_custo_produto.
+   */
+  async custoDetalhado(produtoId: number) {
+    const prod = await this.detalharProduto(produtoId);
+    const ingredientes: any[] = [];
+    if (prod.ficha?.itens?.length) {
+      for (const it of prod.ficha.itens) {
+        const liq = num(it.quantidade);
+        const perca = num(it.perca_pct);
+        const bruta = Math.round((liq / (1 - perca / 100)) * 1000) / 1000;
+        const custoUnit = num(it.custo_unitario);
+        ingredientes.push({
+          insumo_id: it.insumo_id,
+          insumo: it.insumo_nome,
+          unidade: it.unidade,
+          qtd_liquida: liq,
+          perca_pct: perca,
+          qtd_bruta: bruta,
+          custo_unitario: custoUnit,
+          custo: Math.round(bruta * custoUnit * 100) / 100,
+        });
+      }
+    } else if (prod.insumo_vinculado_id) {
+      const ins = await this.db.queryOne<any>(
+        `SELECT i.nome, i.custo_unitario, um.sigla AS unidade
+         FROM insumo i JOIN unidade_medida um ON um.id = i.unidade_estoque_id
+         WHERE i.id = $1`,
+        [prod.insumo_vinculado_id],
+      );
+      if (ins) {
+        ingredientes.push({
+          insumo_id: prod.insumo_vinculado_id,
+          insumo: ins.nome,
+          unidade: ins.unidade,
+          qtd_liquida: 1,
+          perca_pct: 0,
+          qtd_bruta: 1,
+          custo_unitario: num(ins.custo_unitario),
+          custo: num(ins.custo_unitario),
+        });
+      }
+    }
+    const custoReceita = Math.round(ingredientes.reduce((t, x) => t + x.custo, 0) * 100) / 100;
+    const rendimento = prod.ficha ? num(prod.ficha.rendimento) || 1 : 1;
+    const custoPorcao = Math.round((custoReceita / rendimento) * 100) / 100;
+    const preco = num(prod.preco);
+    return {
+      produto_id: prod.id,
+      produto: prod.nome,
+      preco,
+      rendimento,
+      ingredientes,
+      custo_receita: custoReceita,
+      custo_porcao: custoPorcao,
+      margem_valor: Math.round((preco - custoPorcao) * 100) / 100,
+      margem_pct: preco > 0 ? Math.round(((preco - custoPorcao) / preco) * 1000) / 10 : null,
+      sem_ficha: ingredientes.length === 0,
+    };
   }
 }

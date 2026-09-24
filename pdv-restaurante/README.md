@@ -291,3 +291,38 @@ Bancos criados antes desta mudança precisam (fora de transação p/ o enum):
 `ux_impressao_job`, `ux_caixa_aberto_operador`, `ux_usuario_email`, as views
 `vw_conta_resumo`/`vw_caixa_resumo` e os CHECKs — ou reaplicar `schema.sql`
 do zero (PGlite/dev já faz isso sozinho).
+
+## 12. Fase 4 — Estoque avançado (nesta branch)
+
+### Recebimento de compra (`POST /estoque/recebimento`, GERENTE/ADMIN)
+- Nota atômica: vários insumos de uma vez, com `fornecedorId`,
+  `documento` (NF-e) e observação opcional.
+- Quantidade na **un. de compra** quando o insumo tem uma (saco/cx ×
+  `fator_compra` → un. de estoque); sem un. de compra, entra direto.
+- Item com `custoTotal` recalcula o **custo médio ponderado**
+  `(saldo×custo + entrada×custo)/(saldo + entrada)` (saldo ≤ 0 assume o
+  custo da entrada); item sem custo só soma saldo. Insumo repetido na
+  nota → 400.
+
+### Inventário (`/estoque/inventarios`, GERENTE/ADMIN)
+- Um `ABERTO` por vez (2º → 409). Contagens na un. de estoque, com
+  upsert por (inventário, insumo) e trava contra o mesmo insumo contado
+  em dois inventários abertos.
+- Detalhe mostra sistema × contado, diferença, valor ao custo médio e
+  resumo (sobras/faltas/valor). Fechar exige ≥ 1 contagem e gera
+  `AJUSTE_POSITIVO`/`AJUSTE_NEGATIVO` (origem `CONTAGEM`) por diferença
+  não-zero; zerar não gera movimento. Cancelar descarta as contagens.
+- Novas tabelas: `inventario` + `inventario_contagem` (bancos antigos:
+  reaplicar o schema ou rodar o bloco "Inventário (Fase 4)" dele).
+
+### Custos
+- `GET /produtos/:id/custo`: ingrediente a ingrediente (qtd líquida →
+  bruta pela perca → custo), custo da receita/porção e margem — mesma
+  fórmula da baixa e da `vw_custo_produto`.
+- `GET /produtos?margemAbaixoDe=X`: só pratos com margem < X%.
+- `GET /estoque/cmv?de=&ate=`: CMV das baixas (`SAIDA_VENDA` − estornos
+  de cancelamento) × receita por prato; `GET /estoque/perdas`: perdas
+  avaliadas (custo do movimento ou atual) + consumo interno separado.
+  Período default = mês corrente até hoje.
+- Tela `/estoque.html`: recebimento, saldos, inventário, CMV, perdas e
+  custo do prato (linkada em demo/KDS/caixa). Smoke: 83 checks ✔.

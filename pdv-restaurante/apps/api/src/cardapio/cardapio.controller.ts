@@ -63,6 +63,11 @@ export class CardapioController {
     return this.cardapio.detalharProduto(id);
   }
 
+  @Get('produtos/:id/custo')
+  custoProduto(@Param('id', ParseIntPipe) id: number) {
+    return this.cardapio.custoDetalhado(id);
+  }
+
   @Roles('GERENTE', 'ADMIN')
   @Post('produtos')
   criarProduto(@Body() dto: CriarProdutoDto) {

@@ -1,12 +1,16 @@
 import {
+  ArrayMinSize,
+  IsArray,
   IsBoolean,
   IsIn,
   IsInt,
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -118,4 +122,76 @@ export class CriarMovimentoDto {
   @IsString()
   @MaxLength(500)
   motivo?: string;
+}
+
+export class RecebimentoItemDto {
+  @Type(() => Number)
+  @IsInt()
+  insumoId!: number;
+
+  /** Quantidade na unidade de COMPRA (saco, cx...) se o insumo tiver uma;
+   *  senão, direto na unidade de estoque. */
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0.0001)
+  quantidade!: number;
+
+  /** R$ TOTAL pago por esta linha (rateia pelo fator p/ atualizar o custo). */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  custoTotal?: number;
+}
+
+export class ReceberCompraDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  fornecedorId?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  documento?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  observacao?: string;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => RecebimentoItemDto)
+  itens!: RecebimentoItemDto[];
+}
+
+export class CriarInventarioDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  descricao?: string;
+}
+
+export class ContagemDto {
+  @Type(() => Number)
+  @IsInt()
+  insumoId!: number;
+
+  /** Quantidade contada, sempre na UNIDADE DE ESTOQUE do insumo. */
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  quantidade!: number;
+}
+
+export class PeriodoQuery {
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'de deve ser AAAA-MM-DD' })
+  de?: string;
+
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'ate deve ser AAAA-MM-DD' })
+  ate?: string;
 }

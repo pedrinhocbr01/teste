@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Estoque — PDV</title>
+<style>
+  :root { --bg:#0f1216; --card:#1a1f27; --line:#2a323e; --txt:#e8edf3; --mut:#9aa5b3;
+          --ok:#2fbf71; --warn:#f0a020; --bad:#e05555; --acc:#3b82f6; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:15px/1.5 system-ui,sans-serif; }
+  header { padding:12px 18px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; }
+  .pill { padding:2px 10px; border-radius:20px; font-size:12px; background:var(--card); border:1px solid var(--line); }
+  .pill.ok { color:var(--ok); border-color:var(--ok); }
+  main { display:grid; grid-template-columns:360px 1fr 420px; gap:14px; padding:14px; max-width:1700px; margin:auto; align-items:start; }
+  @media (max-width:1200px){ main{ grid-template-columns:1fr; } }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:14px; }
+  h2 { font-size:13px; margin:0 0 10px; text-transform:uppercase; letter-spacing:.5px; color:var(--mut); }
+  input,select,button { font:inherit; border-radius:8px; border:1px solid var(--line); background:#11151b; color:var(--txt); padding:8px 10px; }
+  input[type=number]{ width:100%; } select { max-width:100%; }
+  button { background:var(--acc); border:none; cursor:pointer; font-weight:600; }
+  button.ghost { background:transparent; border:1px solid var(--line); }
+  button.ok { background:var(--ok); color:#06130c; } button.bad { background:var(--bad); color:#fff; }
+  button:disabled { opacity:.5; cursor:default; }
+  form { display:flex; flex-direction:column; gap:8px; }
+  .row { display:flex; gap:8px; } .row>*{ flex:1; min-width:0; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td{ text-align:left; padding:5px 4px; border-bottom:1px solid var(--line); }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .tag{ font-size:11px; padding:1px 8px; border-radius:12px; background:#11151b; border:1px solid var(--line); white-space:nowrap; }
+  .tag.ok{ color:var(--ok); border-color:var(--ok); } .tag.warn{ color:var(--warn); border-color:var(--warn); }
+  .tag.bad{ color:var(--bad); border-color:var(--bad); }
+  .hint{ font-size:12px; color:var(--mut); }
+  .total { font-size:20px; font-weight:800; }
+  .inv-btn { display:block; width:100%; margin-bottom:6px; text-align:left; background:#11151b; border:1px solid var(--line); }
+  .inv-btn.sel { outline:2px solid var(--acc); }
+  #log{ height:120px; overflow:auto; font:12px/1.6 monospace; background:#0b0e12; border:1px solid var(--line); border-radius:8px; padding:8px; margin-top:10px; }
+  .neg { color:var(--bad); } .pos { color:var(--ok); }
+</style>
+</head>
+<body>
+<header>
+  <h1>📦 Estoque</h1>
+  <span id="userPill" class="pill">deslogado</span>
+  <span style="flex:1"></span>
+  <a href="/demo.html" style="color:var(--mut); font-size:13px">demo garçom</a>
+  <a href="/kds.html" style="color:var(--mut); font-size:13px">🔥 KDS</a>
+  <a href="/caixa.html" style="color:var(--mut); font-size:13px">💰 Caixa</a>
+</header>
+<main>
+  <div>
+    <section>
+      <h2>Gerente</h2>
+      <form id="loginForm">
+        <div class="row">
+          <select id="email"><option value="diego@casadofogo.com">Diego (GERENTE)</option></select>
+          <input id="pin" value="5555" maxlength="6" size="6" />
+          <button>Entrar</button>
+        </div>
+      </form>
+    </section>
+    <section>
+      <h2>Receber compra</h2>
+      <form id="recForm">
+        <div class="row">
+          <select id="recForn"></select>
+          <input id="recDoc" placeholder="Documento (NF-e…)" />
+        </div>
+        <div class="row">
+          <select id="recIns" style="flex:2"></select>
+          <input id="recQtd" type="number" step="0.001" min="0" placeholder="Qtd" />
+        </div>
+        <div class="row">
+          <input id="recCusto" type="number" step="0.01" min="0" placeholder="Custo total R$ (vazio = sem custo)" />
+          <button type="button" id="recAdd" class="ghost">+ item</button>
+        </div>
+        <div id="recItens" class="hint">nenhum item</div>
+        <button class="ok">Confirmar recebimento</button>
+        <div class="hint">Qtd na <b>un. de compra</b> (saco/cx) quando houver — o sistema converte e recalcula o custo médio.</div>
+      </form>
+      <div id="recResult"></div>
+    </section>
+    <section>
+      <h2>Saldos</h2>
+      <table><thead><tr><th>Insumo</th><th class="num">Saldo</th><th class="num">Mín</th><th></th></tr></thead>
+      <tbody id="saldosBody"><tr><td colspan="4" class="hint">entre para carregar</td></tr></tbody></table>
+    </section>
+  </div>
+  <div>
+    <section>
+      <h2>Inventário</h2>
+      <form id="invForm" class="row">
+        <input id="invDesc" placeholder="Descrição (ex.: Inventário semanal)" style="flex:2" />
+        <button>Abrir inventário</button>
+      </form>
+      <div id="invList" style="margin-top:8px"></div>
+    </section>
+    <section id="invDetBox" style="display:none">
+      <h2 id="invTitle">Contagens</h2>
+      <div id="invResumo" class="hint"></div>
+      <form id="contForm" class="row" style="margin:8px 0">
+        <select id="contIns" style="flex:2"></select>
+        <input id="contQtd" type="number" step="0.001" min="0" placeholder="Qtd contada (un. estoque)" />
+        <button>Lançar</button>
+      </form>
+      <table><thead><tr><th>Insumo</th><th class="num">Sistema</th><th class="num">Contado</th><th class="num">Dif</th><th class="num">Valor</th><th></th></tr></thead>
+      <tbody id="contBody"></tbody></table>
+      <div class="row" style="margin-top:8px">
+        <button id="btnFechar" class="ok">Fechar (gerar ajustes)</button>
+        <button id="btnCancelar" class="ghost">Cancelar inventário</button>
+      </div>
+    </section>
+  </div>
+  <div>
+    <section>
+      <h2>CMV × receita</h2>
+      <form id="cmvForm" class="row">
+        <input id="cmvDe" type="date" /><input id="cmvAte" type="date" /><button>Calcular</button>
+      </form>
+      <div id="cmvTot" style="margin:8px 0"></div>
+      <table><thead><tr><th>Prato</th><th class="num">Receita</th><th class="num">CMV</th><th class="num">%</th></tr></thead>
+      <tbody id="cmvBody"></tbody></table>
+    </section>
+    <section>
+      <h2>Perdas</h2>
+      <div id="perdaTot" class="hint"></div>
+      <table><thead><tr><th>Insumo</th><th class="num">Qtd</th><th class="num">Valor</th></tr></thead>
+      <tbody id="perdaBody"></tbody></table>
+    </section>
+    <section>
+      <h2>Custo do prato</h2>
+      <div class="row"><select id="prodSel" style="flex:2"></select><button id="btnCusto" class="ghost">Ver</button></div>
+      <div id="custoBox"></div>
+    </section>
+    <section><h2>Log</h2><div id="log"></div></section>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const R$ = (v) => 'R$ ' + Number(v || 0).toFixed(2).replace('.', ',');
+const N3 = (v) => Number(v || 0).toLocaleString('pt-BR', { maximumFractionDigits: 3 });
+let token = localStorage.getItem('pdv_token') || '';
+let insumos = [], invSel = null, recLinhas = [];
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) } });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.message || `HTTP ${r.status}`);
+  return data;
+}
+function log(m) { const d = document.createElement('div'); d.textContent = `[${new Date().toLocaleTimeString()}] ${m}`; $('log').prepend(d); }
+function setUser(u) { $('userPill').textContent = `${u.nome} · ${u.papel}`; $('userPill').className = 'pill ok'; }
+
+$('loginForm').onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const r = await api('/auth/pin', { method: 'POST', body: JSON.stringify({ email: $('email').value, pin: $('pin').value }) });
+    token = r.access_token; localStorage.setItem('pdv_token', token);
+    setUser(r.usuario); boot();
+  } catch (err) { alert(err.message); }
+};
+
+async function boot() {
+  if (!token) return;
+  try {
+    setUser(await api('/auth/me'));
+    insumos = await api('/insumos');
+    const opt = (i) => `<option value="${i.id}">${i.nome} (${i.unidade || ''}${i.unidade_compra ? ' · compra: ' + i.unidade_compra + '×' + i.fator_compra : ''})</option>`;
+    $('recIns').innerHTML = insumos.map(opt).join('');
+    $('contIns').innerHTML = insumos.map(opt).join('');
+    $('recForn').innerHTML = '<option value="">Fornecedor…</option>' + (await api('/fornecedores')).map((f) => `<option value="${f.id}">${f.nome}</option>`).join('');
+    $('prodSel').innerHTML = (await api('/produtos')).map((p) => `<option value="${p.id}">${p.nome} — ${R$(p.preco)}</option>`).join('');
+    const hoje = new Date().toISOString().slice(0, 10);
+    $('cmvDe').value = hoje.slice(0, 7) + '-01'; $('cmvAte').value = hoje;
+    await Promise.all([carregarSaldos(), carregarInvs(), carregarCustos()]);
+  } catch { token = ''; }
+}
+
+// ---- recebimento ----
+$('recAdd').onclick = () => {
+  const id = Number($('recIns').value);
+  const ins = insumos.find((i) => i.id === id);
+  const qtd = Number($('recQtd').value), ct = $('recCusto').value === '' ? null : Number($('recCusto').value);
+  if (!ins || !(qtd > 0)) return alert('Escolha o insumo e a quantidade');
+  recLinhas.push({ insumoId: id, nome: ins.nome, quantidade: qtd, custoTotal: ct });
+  $('recQtd').value = ''; $('recCusto').value = ''; renderRecItens();
+};
+function renderRecItens() {
+  $('recItens').innerHTML = recLinhas.length
+    ? recLinhas.map((l, ix) => `<div>${l.nome}: <b>${N3(l.quantidade)}</b>${l.custoTotal != null ? ' · ' + R$(l.custoTotal) : ' · sem custo'} <a href="#" data-ix="${ix}">remover</a></div>`).join('')
+    : 'nenhum item';
+  $('recItens').querySelectorAll('a').forEach((a) => (a.onclick = (e) => { e.preventDefault(); recLinhas.splice(Number(a.dataset.ix), 1); renderRecItens(); }));
+}
+$('recForm').onsubmit = async (e) => {
+  e.preventDefault();
+  if (!recLinhas.length) return alert('Adicione ao menos um item');
+  try {
+    const body = { itens: recLinhas.map(({ insumoId, quantidade, custoTotal }) => ({ insumoId, quantidade, ...(custoTotal != null ? { custoTotal } : {}) })) };
+    if ($('recForn').value) body.fornecedorId = Number($('recForn').value);
+    if ($('recDoc').value.trim()) body.documento = $('recDoc').value.trim();
+    const r = await api('/estoque/recebimento', { method: 'POST', body: JSON.stringify(body) });
+    recLinhas = []; renderRecItens(); $('recDoc').value = '';
+    $('recResult').innerHTML = '<table>' + r.linhas.map((l) =>
+      `<tr><td>${l.insumo}</td><td class="num">+${N3(l.quantidade_estoque)} ${l.unidade}</td><td class="num">médio ${R$(l.custo_medio_novo)}</td><td class="num">saldo ${N3(l.saldo_novo)}</td></tr>`).join('') + '</table>';
+    log('recebido: ' + r.motivo); carregarSaldos();
+  } catch (err) { alert(err.message); }
+};
+async function carregarSaldos() {
+  try {
+    insumos = await api('/insumos'); // tem saldo + mínimo
+    $('saldosBody').innerHTML = insumos.map((s) => {
+      const baixo = Number(s.saldo) < Number(s.estoque_minimo || 0);
+      return `<tr><td>${s.nome}</td><td class="num">${N3(s.saldo)} ${s.unidade || ''}</td><td class="num">${N3(s.estoque_minimo)}</td><td>${baixo ? '<span class="tag warn">baixo</span>' : ''}</td></tr>`;
+    }).join('');
+  } catch (err) { $('saldosBody').innerHTML = `<tr><td colspan="4" class="hint">${err.message}</td></tr>`; }
+}
+
+// ---- inventário ----
+$('invForm').onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const inv = await api('/estoque/inventarios', { method: 'POST', body: JSON.stringify({ descricao: $('invDesc').value.trim() || undefined }) });
+    $('invDesc').value = ''; log('inventário #' + inv.id + ' aberto'); await carregarInvs(); selecionarInv(inv.id);
+  } catch (err) { alert(err.message); }
+};
+async function carregarInvs() {
+  const rows = await api('/estoque/inventarios');
+  $('invList').innerHTML = rows.map((i) =>
+    `<button class="inv-btn${i.id === invSel ? ' sel' : ''}" data-id="${i.id}">#${i.id} ${i.descricao || ''} <span class="tag ${i.status === 'ABERTO' ? 'ok' : ''}">${i.status}</span> <span class="hint">${i.n_contagens} itens</span></button>`).join('') || '<div class="hint">nenhum inventário</div>';
+  $('invList').querySelectorAll('button').forEach((b) => (b.onclick = () => selecionarInv(Number(b.dataset.id))));
+}
+async function selecionarInv(id) {
+  invSel = id;
+  const d = await api(`/estoque/inventarios/${id}`);
+  $('invDetBox').style.display = '';
+  $('invTitle').textContent = `Inventário #${d.id} — ${d.status}`;
+  const r = d.resumo || {};
+  $('invResumo').textContent = `${r.n_itens || 0} itens · ${r.n_sobra || 0} sobras · ${r.n_falta || 0} faltas · ajustes ${R$(r.valor_ajustes)}`;
+  $('contBody').innerHTML = (d.itens || []).map((x) =>
+    `<tr><td>${x.insumo} (${x.unidade})</td><td class="num">${N3(x.sistema)}</td><td class="num">${N3(x.contado)}</td><td class="num ${x.diferenca < 0 ? 'neg' : x.diferenca > 0 ? 'pos' : ''}">${x.diferenca > 0 ? '+' : ''}${N3(x.diferenca)}</td><td class="num">${R$(x.valor_diferenca)}</td><td>${d.status === 'ABERTO' ? `<a href="#" data-del="${x.insumo_id}">x</a>` : ''}</td></tr>`).join('');
+  $('contBody').querySelectorAll('a').forEach((a) => (a.onclick = async (e) => {
+    e.preventDefault();
+    await api(`/estoque/inventarios/${id}/contagens/${a.dataset.del}`, { method: 'DELETE' });
+    selecionarInv(id); carregarInvs();
+  }));
+  const aberto = d.status === 'ABERTO';
+  $('contForm').style.display = aberto ? '' : 'none';
+  $('btnFechar').disabled = !aberto || !(d.itens || []).length;
+  $('btnCancelar').disabled = !aberto;
+  carregarInvs();
+}
+$('contForm').onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    await api(`/estoque/inventarios/${invSel}/contagens`, { method: 'POST',
+      body: JSON.stringify({ insumoId: Number($('contIns').value), quantidade: Number($('contQtd').value) }) });
+    $('contQtd').value = ''; selecionarInv(invSel);
+  } catch (err) { alert(err.message); }
+};
+$('btnFechar').onclick = async () => {
+  if (!confirm('Fechar e gerar os ajustes de estoque?')) return;
+  try { const r = await api(`/estoque/inventarios/${invSel}/fechar`, { method: 'POST' }); log(`inventário #${invSel} fechado: ${r.ajustes_gerados} ajustes`); selecionarInv(invSel); carregarSaldos(); }
+  catch (err) { alert(err.message); }
+};
+$('btnCancelar').onclick = async () => {
+  if (!confirm('Cancelar este inventário? As contagens serão descartadas.')) return;
+  try { await api(`/estoque/inventarios/${invSel}/cancelar`, { method: 'POST' }); selecionarInv(invSel); }
+  catch (err) { alert(err.message); }
+};
+
+// ---- custos ----
+$('cmvForm').onsubmit = (e) => { e.preventDefault(); carregarCustos(); };
+async function carregarCustos() {
+  const qs = `?de=${$('cmvDe').value}&ate=${$('cmvAte').value}`;
+  const c = await api('/estoque/cmv' + qs);
+  $('cmvTot').innerHTML = `CMV <span class="total">${R$(c.cmv_total)}</span> · receita ${R$(c.receita_total)} · <b>${c.cmv_pct ?? '—'}%</b>`;
+  $('cmvBody').innerHTML = (c.por_produto || []).map((p) =>
+    `<tr><td>${p.produto} <span class="hint">×${N3(p.qtd_vendida)}</span></td><td class="num">${R$(p.receita)}</td><td class="num">${R$(p.cmv)}</td><td class="num">${p.cmv_pct ?? '—'}%</td></tr>`).join('');
+  const p = await api('/estoque/perdas' + qs);
+  $('perdaTot').innerHTML = `Perdas <b>${R$(p.perda_total)}</b> · consumo interno ${R$(p.consumo_interno_total)}`;
+  $('perdaBody').innerHTML = (p.por_insumo || []).map((x) =>
+    `<tr><td>${x.insumo}</td><td class="num">${N3(x.qtd_perda)} ${x.unidade || ''}</td><td class="num">${R$(x.valor_perda)}</td></tr>`).join('') || '<tr><td colspan="3" class="hint">sem perdas no período</td></tr>';
+}
+$('btnCusto').onclick = async () => {
+  const c = await api(`/produtos/${$('prodSel').value}/custo`);
+  $('custoBox').innerHTML = (c.sem_ficha ? '<div class="hint">sem ficha técnica — custo zero (ou vínculo direto).</div>' : '') +
+    '<table>' + (c.ingredientes || []).map((x) =>
+      `<tr><td>${x.insumo}</td><td class="num">${N3(x.qtd_bruta)} ${x.unidade || ''}</td><td class="num">${R$(x.custo)}</td></tr>`).join('') + '</table>' +
+    `<div style="margin-top:6px">Custo/porção <b>${R$(c.custo_porcao)}</b> · preço ${R$(c.preco)} · margem <b>${c.margem_pct ?? '—'}%</b> (${R$(c.margem_valor)})</div>`;
+};
+
+boot();
+</script>
+</body>
+</html>

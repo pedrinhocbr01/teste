@@ -64,6 +64,12 @@ export class ListarProdutosQuery {
   @IsString()
   @IsIn(['true', 'false'])
   ativos?: string;
+
+  /** Só produtos com margem abaixo de X% (ex.: ?margemAbaixoDe=60). */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  margemAbaixoDe?: number;
 }
 
 export class CriarProdutoDto {

@@ -298,6 +298,84 @@ try {
   const fechaCx = await api(`/caixas/${cxId}/fechar`, { method: 'POST', token: tokGer, body: { valorContado: esperado } });
   check('fechamento bate exato', fechaCx.data.conferencia?.ok === true && fechaCx.data.conferencia?.diferenca === 0, JSON.stringify(fechaCx.data.conferencia));
 
+  // ---- FASE 4: recebimento de compra ----
+  const arrozAntes = await api('/insumos/2', { token: tokGer });
+  const saldoArroz = Number(arrozAntes.data.saldo);
+  const custoArroz = Number(arrozAntes.data.custo_unitario);
+  const rec = await api('/estoque/recebimento', { method: 'POST', token: tokGer,
+    body: { fornecedorId: 4, documento: 'NF-e 9999', itens: [{ insumoId: 2, quantidade: 2, custoTotal: 70 }] } });
+  const linha = rec.data.linhas?.[0] || {};
+  check('recebimento converte saco→kg (2 sacos = 10 kg)',
+    rec.status === 201 && linha.quantidade_estoque === 10 && linha.unidade_compra === 'saco', `status=${rec.status}`);
+  const custoEsperado = Math.round(((saldoArroz * custoArroz + 70) / (saldoArroz + 10)) * 10000) / 10000;
+  check('custo médio ponderado', linha.custo_medio_novo === custoEsperado, `custo=${linha.custo_medio_novo} esp=${custoEsperado}`);
+  check('recebimento soma no saldo', linha.saldo_novo === Math.round((saldoArroz + 10) * 1000) / 1000, `saldo=${linha.saldo_novo}`);
+  const recSemCusto = await api('/estoque/recebimento', { method: 'POST', token: tokGer,
+    body: { itens: [{ insumoId: 1, quantidade: 1.5 }] } });
+  const lsc = recSemCusto.data.linhas?.[0] || {};
+  check('recebimento sem custo mantém médio (kg direto)',
+    lsc.quantidade_estoque === 1.5 && lsc.custo_linha === null && lsc.custo_medio_novo === lsc.custo_medio_anterior);
+  const rec403 = await api('/estoque/recebimento', { method: 'POST', token, body: { itens: [{ insumoId: 1, quantidade: 1 }] } });
+  check('garçom não recebe compra → 403', rec403.status === 403, `status=${rec403.status}`);
+  const recForn = await api('/estoque/recebimento', { method: 'POST', token: tokGer,
+    body: { fornecedorId: 999, itens: [{ insumoId: 1, quantidade: 1 }] } });
+  check('fornecedor inválido → 400', recForn.status === 400, `status=${recForn.status}`);
+
+  // ---- FASE 4: inventário ----
+  const inv = await api('/estoque/inventarios', { method: 'POST', token: tokGer, body: { descricao: 'Smoke' } });
+  check('abrir inventário', inv.status === 201 && inv.data.status === 'ABERTO', `status=${inv.status}`);
+  const invId = inv.data.id;
+  const inv2 = await api('/estoque/inventarios', { method: 'POST', token: tokGer, body: {} });
+  check('2º inventário aberto → 409', inv2.status === 409, `status=${inv2.status}`);
+  const arrozAgora = Number((await api('/insumos/2', { token: tokGer })).data.saldo);
+  const cont1 = await api(`/estoque/inventarios/${invId}/contagens`, { method: 'POST', token: tokGer,
+    body: { insumoId: 2, quantidade: Math.round((arrozAgora - 0.5) * 1000) / 1000 } });
+  check('contagem calcula diferença (-0,5)', cont1.data.itens?.[0]?.diferenca === -0.5, JSON.stringify(cont1.data.resumo));
+  const cont2 = await api(`/estoque/inventarios/${invId}/contagens`, { method: 'POST', token: tokGer,
+    body: { insumoId: 2, quantidade: arrozAgora - 1 } });
+  check('recontagem sobrescreve (upsert)', cont2.data.itens?.length === 1 && cont2.data.itens[0].diferenca === -1);
+  const feijaoSaldo = Number((await api('/insumos/3', { token: tokGer })).data.saldo);
+  await api(`/estoque/inventarios/${invId}/contagens`, { method: 'POST', token: tokGer,
+    body: { insumoId: 3, quantidade: feijaoSaldo } });
+  const delCont = await api(`/estoque/inventarios/${invId}/contagens/3`, { method: 'DELETE', token: tokGer });
+  const invDet = await api(`/estoque/inventarios/${invId}`, { token: tokGer });
+  check('remover contagem', delCont.status === 200 && invDet.data.itens?.length === 1, `n=${invDet.data.itens?.length}`);
+  const fechaInv = await api(`/estoque/inventarios/${invId}/fechar`, { method: 'POST', token: tokGer });
+  check('fechar gera 1 ajuste (falta)', fechaInv.data.ajustes_gerados === 1 && fechaInv.data.status === 'FECHADO', JSON.stringify(fechaInv.data.resumo));
+  const arrozFim = Number((await api('/insumos/2', { token: tokGer })).data.saldo);
+  check('saldo após ajuste de falta', arrozFim === Math.round((arrozAgora - 1) * 1000) / 1000, `saldo=${arrozFim}`);
+  const fechaInv2 = await api(`/estoque/inventarios/${invId}/fechar`, { method: 'POST', token: tokGer });
+  check('fechar 2x → 400', fechaInv2.status === 400, `status=${fechaInv2.status}`);
+  const contFech = await api(`/estoque/inventarios/${invId}/contagens`, { method: 'POST', token: tokGer,
+    body: { insumoId: 2, quantidade: 1 } });
+  check('contagem em inventário fechado → 400', contFech.status === 400, `status=${contFech.status}`);
+  const invB = await api('/estoque/inventarios', { method: 'POST', token: tokGer, body: { descricao: 'Smoke B' } });
+  await api(`/estoque/inventarios/${invB.data.id}/cancelar`, { method: 'POST', token: tokGer });
+  const invBCanc = await api(`/estoque/inventarios/${invB.data.id}`, { token: tokGer });
+  check('cancelar inventário', invBCanc.data.status === 'CANCELADO');
+
+  // ---- FASE 4: CMV, perdas, custo do prato ----
+  const cmv = await api('/estoque/cmv', { token: tokGer });
+  check('CMV responde com totais', cmv.status === 200 && typeof cmv.data.cmv_total === 'number' && Array.isArray(cmv.data.por_produto),
+    `cmv=${cmv.data.cmv_total} receita=${cmv.data.receita_total}`);
+  const cmvRuim = await api('/estoque/cmv?de=2024-13-99', { token: tokGer });
+  check('CMV período inválido → 400', cmvRuim.status === 400, `status=${cmvRuim.status}`);
+  const perda = await api('/estoque/movimentos', { method: 'POST', token: tokGer,
+    body: { insumoId: 8, tipo: 'PERDA', quantidade: 1, motivo: 'smoke' } });
+  const perdas = await api('/estoque/perdas', { token: tokGer });
+  const tomate = (perdas.data.por_insumo || []).find((x) => x.insumo_id === 8);
+  check('perda entra no relatório', perda.status === 201 && tomate?.qtd_perda === 1 && tomate?.valor_perda === 7,
+    `perda_total=${perdas.data.perda_total}`);
+  const custo = await api('/produtos/2/custo', { token: tokGer });
+  const pic = (custo.data.ingredientes || []).find((x) => x.insumo_id === 1);
+  check('custo do prato detalha ingredientes',
+    custo.status === 200 && custo.data.ingredientes?.length === 6 && pic?.qtd_bruta === 0.568 && custo.data.margem_pct > 0,
+    `porcao=${custo.data.custo_porcao} margem=${custo.data.margem_pct}%`);
+  const m30 = await api('/produtos?margemAbaixoDe=30', { token: tokGer });
+  const m100 = await api('/produtos?margemAbaixoDe=100', { token: tokGer });
+  check('filtro margemAbaixoDe', m30.status === 200 && m30.data.every((p) => Number(p.margem_pct) < 30) && m100.data.length >= m30.data.length,
+    `n30=${m30.data.length} n100=${m100.data.length}`);
+
   // ---- AUDITORIA: trava de força bruta (por último) ----
   for (let i = 0; i < 5; i++) {
     await api('/auth/pin', { method: 'POST', body: { email: 'bruno@casadofogo.com', pin: '0000' } });
