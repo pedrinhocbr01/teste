@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Relatórios — PDV</title>
+<style>
+  :root { --bg:#0f1216; --card:#1a1f27; --line:#2a323e; --txt:#e8edf3; --mut:#9aa5b3;
+          --ok:#2fbf71; --warn:#f0a020; --bad:#e05555; --acc:#3b82f6; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:15px/1.5 system-ui,sans-serif; }
+  header { padding:12px 18px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; }
+  .pill { padding:2px 10px; border-radius:20px; font-size:12px; background:var(--card); border:1px solid var(--line); }
+  .pill.ok { color:var(--ok); border-color:var(--ok); }
+  main { padding:14px; max-width:1500px; margin:auto; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:14px; }
+  h2 { font-size:13px; margin:0 0 10px; text-transform:uppercase; letter-spacing:.5px; color:var(--mut); }
+  input,select,button { font:inherit; border-radius:8px; border:1px solid var(--line); background:#11151b; color:var(--txt); padding:8px 10px; }
+  button { background:var(--acc); border:none; cursor:pointer; font-weight:600; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:10px; }
+  .kpi { background:#11151b; border:1px solid var(--line); border-radius:8px; padding:10px; }
+  .kpi small { color:var(--mut); display:block; font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
+  .kpi b { font-size:20px; }
+  .cols { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:1000px){ .cols{ grid-template-columns:1fr; } }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td{ text-align:left; padding:5px 4px; border-bottom:1px solid var(--line); }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .tag{ font-size:11px; padding:1px 8px; border-radius:12px; background:#11151b; border:1px solid var(--line); }
+  .tag.A{ color:var(--ok); border-color:var(--ok); } .tag.B{ color:var(--warn); border-color:var(--warn); } .tag.C{ color:var(--mut); }
+  .hint{ font-size:12px; color:var(--mut); }
+  .row { display:flex; gap:8px; align-items:end; flex-wrap:wrap; }
+  .row label { display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--mut); }
+</style>
+</head>
+<body>
+<header>
+  <h1>📊 Relatórios</h1>
+  <span id="userPill" class="pill">deslogado</span>
+  <span style="flex:1"></span>
+  <a href="/demo.html" style="color:var(--mut); font-size:13px">demo garçom</a>
+  <a href="/kds.html" style="color:var(--mut); font-size:13px">🔥 KDS</a>
+  <a href="/caixa.html" style="color:var(--mut); font-size:13px">💰 Caixa</a>
+  <a href="/estoque.html" style="color:var(--mut); font-size:13px">📦 Estoque</a>
+</header>
+<main>
+  <section>
+    <div class="row">
+      <form id="loginForm" class="row">
+        <label>Usuário <select id="email"><option value="diego@casadofogo.com">Diego (GERENTE)</option></select></label>
+        <label>PIN <input id="pin" value="5555" maxlength="6" size="6" /></label>
+        <button>Entrar</button>
+      </form>
+      <form id="perForm" class="row">
+        <label>De <input id="de" type="date" /></label>
+        <label>Até <input id="ate" type="date" /></label>
+        <button>Atualizar</button>
+      </form>
+    </div>
+  </section>
+  <section>
+    <h2>Vendas (recebido)</h2>
+    <div class="grid" id="kpis"></div>
+    <div class="cols">
+      <div><h2>Por forma</h2><table><thead><tr><th>Forma</th><th class="num">N</th><th class="num">Valor</th></tr></thead><tbody id="formas"></tbody></table></div>
+      <div><h2>Por dia</h2><table><thead><tr><th>Dia</th><th class="num">N</th><th class="num">Valor</th></tr></thead><tbody id="dias"></tbody></table></div>
+    </div>
+  </section>
+  <div class="cols">
+    <section>
+      <h2>Curva ABC de produtos</h2>
+      <table><thead><tr><th>Produto</th><th class="num">Qtd</th><th class="num">Receita</th><th class="num">%</th><th class="num">CMV</th><th class="num">Margem</th><th></th></tr></thead><tbody id="abc"></tbody></table>
+      <p class="hint">Base: itens vendidos em pedidos fechados (sem cancelados). CMV das baixas de estoque.</p>
+    </section>
+    <section>
+      <h2>Por categoria</h2>
+      <table><thead><tr><th>Categoria</th><th class="num">Qtd</th><th class="num">Receita</th><th class="num">%</th></tr></thead><tbody id="cats"></tbody></table>
+      <h2 style="margin-top:12px">Por garçom</h2>
+      <table><thead><tr><th>Garçom</th><th class="num">Pedidos</th><th class="num">Receita</th><th class="num">Ticket</th><th class="num">Serviço</th></tr></thead><tbody id="garc"></tbody></table>
+    </section>
+  </div>
+  <div class="cols">
+    <section>
+      <h2>Giro de mesas</h2>
+      <table><thead><tr><th>Mesa</th><th class="num">Ocupações</th><th class="num">Tempo méd</th><th class="num">Receita</th></tr></thead><tbody id="mesas"></tbody></table>
+    </section>
+    <section>
+      <h2>Turnos de caixa</h2>
+      <table><thead><tr><th>#</th><th>Operador</th><th>Status</th><th class="num">Vendido</th><th class="num">Sangria</th><th class="num">Dif.</th></tr></thead><tbody id="caixas"></tbody></table>
+    </section>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const R$ = (v) => 'R$ ' + Number(v || 0).toFixed(2).replace('.', ',');
+const N2 = (v) => Number(v || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 });
+let token = localStorage.getItem('pdv_token') || '';
+
+async function api(path) {
+  const r = await fetch(path, { headers: { ...(token ? { Authorization: 'Bearer ' + token } : {}) } });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.message || `HTTP ${r.status}`);
+  return data;
+}
+function setUser(u) { $('userPill').textContent = `${u.nome} · ${u.papel}`; $('userPill').className = 'pill ok'; }
+const qs = () => `?de=${$('de').value}&ate=${$('ate').value}`;
+
+$('loginForm').onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const r = await fetch('/auth/pin', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: $('email').value, pin: $('pin').value }) }).then((x) => x.json());
+    if (!r.access_token) throw new Error(r.message || 'login falhou');
+    token = r.access_token; localStorage.setItem('pdv_token', token);
+    setUser(r.usuario); carregar();
+  } catch (err) { alert(err.message); }
+};
+$('perForm').onsubmit = (e) => { e.preventDefault(); carregar(); };
+
+async function carregar() {
+  if (!token) return alert('Faça login.');
+  try {
+    const [v, p, c, g, m, cx] = await Promise.all([
+      api('/relatorios/vendas' + qs()), api('/relatorios/produtos' + qs() + '&limite=30'),
+      api('/relatorios/categorias' + qs()), api('/relatorios/garcons' + qs()),
+      api('/relatorios/mesas' + qs()), api('/relatorios/caixas' + qs()),
+    ]);
+    $('kpis').innerHTML = `
+      <div class="kpi"><small>Recebido</small><b>${R$(v.recebido_total)}</b></div>
+      <div class="kpi"><small>Pedidos fechados</small><b>${v.pedidos_fechados}</b></div>
+      <div class="kpi"><small>Ticket médio</small><b>${v.ticket_medio != null ? R$(v.ticket_medio) : '—'}</b></div>
+      <div class="kpi"><small>Serviço (10%)</small><b>${R$(v.servico_total)}</b></div>
+      <div class="kpi"><small>Descontos</small><b>${R$(v.descontos_total)}</b></div>`;
+    $('formas').innerHTML = v.por_forma.map((f) => `<tr><td>${f.forma.replace(/_/g, ' ')}</td><td class="num">${f.n}</td><td class="num">${R$(f.valor)}</td></tr>`).join('') || '<tr><td colspan="3" class="hint">sem recebimentos</td></tr>';
+    const fmtDia = (d) => { const [a, m2, day] = d.split('-'); return `${day}/${m2}`; };
+    $('dias').innerHTML = v.por_dia.map((x) => `<tr><td>${fmtDia(x.dia)}</td><td class="num">${x.n}</td><td class="num">${R$(x.valor)}</td></tr>`).join('');
+    $('abc').innerHTML = p.itens.map((x) => `<tr><td>${x.produto}<br><span class="hint">${x.categoria}</span></td><td class="num">${N2(x.qtd)}</td><td class="num">${R$(x.receita)}</td><td class="num">${x.receita_pct}%</td><td class="num">${R$(x.cmv)}</td><td class="num">${x.margem_pct != null ? x.margem_pct + '%' : '—'}</td><td><span class="tag ${x.classe}">${x.classe}</span></td></tr>`).join('') || '<tr><td colspan="7" class="hint">sem vendas no período</td></tr>';
+    $('cats').innerHTML = c.itens.map((x) => `<tr><td>${x.categoria}</td><td class="num">${N2(x.qtd)}</td><td class="num">${R$(x.receita)}</td><td class="num">${x.receita_pct}%</td></tr>`).join('');
+    $('garc').innerHTML = g.itens.map((x) => `<tr><td>${x.garcom}</td><td class="num">${x.pedidos_fechados}</td><td class="num">${R$(x.receita_itens)}</td><td class="num">${x.ticket_medio != null ? R$(x.ticket_medio) : '—'}</td><td class="num">${R$(x.servico_gerado)}</td></tr>`).join('');
+    $('mesas').innerHTML = m.itens.map((x) => `<tr><td>Mesa ${x.mesa} <span class="hint">${x.area}</span></td><td class="num">${x.ocupacoes}</td><td class="num">${x.tempo_medio_min != null ? x.tempo_medio_min + ' min' : '—'}</td><td class="num">${R$(x.receita_itens)}</td></tr>`).join('');
+    $('caixas').innerHTML = cx.itens.map((x) => `<tr><td>${x.caixa_id}</td><td>${x.operador}</td><td><span class="tag">${x.status}</span></td><td class="num">${R$(x.vendido)}</td><td class="num">${R$(x.sangrias)}</td><td class="num">${x.diferenca != null ? R$(x.diferenca) : '—'}</td></tr>`).join('');
+  } catch (err) { alert(err.message); }
+}
+
+(async function boot() {
+  const hoje = new Date().toISOString().slice(0, 10);
+  $('de').value = hoje.slice(0, 7) + '-01'; $('ate').value = hoje;
+  if (!token) return;
+  try { setUser(await api('/auth/me')); carregar(); } catch { token = ''; }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Caixa — PDV</title>
+<script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+<style>
+  :root { --bg:#0f1216; --card:#1a1f27; --line:#2a323e; --txt:#e8edf3; --mut:#9aa5b3;
+          --ok:#2fbf71; --warn:#f0a020; --bad:#e05555; --acc:#3b82f6; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:15px/1.5 system-ui,sans-serif; }
+  header { padding:12px 18px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; }
+  .pill { padding:2px 10px; border-radius:20px; font-size:12px; background:var(--card); border:1px solid var(--line); }
+  .pill.ok { color:var(--ok); border-color:var(--ok); }
+  main { display:grid; grid-template-columns:330px 1fr 380px; gap:14px; padding:14px; max-width:1600px; margin:auto; }
+  @media (max-width:1100px){ main{ grid-template-columns:1fr; } }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  h2 { font-size:13px; margin:0 0 10px; text-transform:uppercase; letter-spacing:.5px; color:var(--mut); }
+  input,select,button { font:inherit; border-radius:8px; border:1px solid var(--line); background:#11151b; color:var(--txt); padding:8px 10px; }
+  button { background:var(--acc); border:none; cursor:pointer; font-weight:600; }
+  button.ghost { background:transparent; border:1px solid var(--line); }
+  button.ok { background:var(--ok); color:#06130c; } button.warn { background:var(--warn); color:#111; }
+  button:disabled { opacity:.5; cursor:default; }
+  form { display:flex; flex-direction:column; gap:8px; }
+  .row { display:flex; gap:8px; } .row>*{ flex:1; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td{ text-align:left; padding:5px 4px; border-bottom:1px solid var(--line); }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .mesa-btn { display:block; width:100%; margin-bottom:6px; text-align:left; background:#11151b; border:1px solid var(--line); }
+  .mesa-btn.sel { outline:2px solid var(--acc); }
+  .tag{ font-size:11px; padding:1px 8px; border-radius:12px; background:#11151b; border:1px solid var(--line); }
+  .hint{ font-size:12px; color:var(--mut); }
+  .total { font-size:22px; font-weight:800; } .saldo { font-size:26px; font-weight:800; color:var(--warn); }
+  .saldo.zero { color:var(--ok); }
+  pre.recibo { background:#fff; color:#111; padding:14px; border-radius:8px; font:13px/1.5 monospace; white-space:pre-wrap; }
+  @media print { body * { display:none; } pre.recibo, pre.recibo * { display:block; } pre.recibo { position:absolute; top:0; left:0; width:100%; } }
+  #log{ height:150px; overflow:auto; font:12px/1.6 monospace; background:#0b0e12; border:1px solid var(--line); border-radius:8px; padding:8px; margin-top:10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>💰 Caixa</h1>
+  <span id="userPill" class="pill">deslogado</span>
+  <span id="cxPill" class="pill">caixa —</span>
+  <span style="flex:1"></span>
+  <a href="/demo.html" style="color:var(--mut); font-size:13px">demo garçom</a>
+  <a href="/kds.html" style="color:var(--mut); font-size:13px">🔥 KDS</a>
+  <a href="/estoque.html" style="color:var(--mut); font-size:13px">📦 Estoque</a>
+  <a href="/relatorios.html" style="color:var(--mut); font-size:13px">📊 Relatórios</a>
+</header>
+<main>
+  <section>
+    <h2>Turno de caixa</h2>
+    <form id="loginForm">
+      <div class="row">
+        <select id="email">
+          <option value="carla@casadofogo.com">Carla (CAIXA)</option>
+          <option value="diego@casadofogo.com">Diego (GERENTE)</option>
+        </select>
+        <input id="pin" value="3333" maxlength="6" size="6" />
+      </div>
+      <button type="submit">Entrar</button>
+    </form>
+    <div id="caixaBox" style="margin-top:10px"><p class="hint">Faça login.</p></div>
+  </section>
+
+  <section>
+    <h2>Mesas com pedido aberto</h2>
+    <div class="row" style="margin-bottom:8px">
+      <button class="ghost" id="btnMesas">↻ Atualizar</button>
+      <button class="ghost" id="btnConta">🧾 Pedir conta</button>
+      <button class="ghost" id="btnFecharPed">✅ Fechar pedido</button>
+    </div>
+    <div id="mesas"></div>
+    <div id="contas" style="margin-top:10px"></div>
+  </section>
+
+  <section>
+    <h2>Conta & pagamento</h2>
+    <div id="conta">Selecione uma mesa.</div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const R$ = (v) => 'R$ ' + Number(v || 0).toFixed(2).replace('.', ',');
+let token = localStorage.getItem('pdv_token') || '';
+let mesaSel = null, pedidoSel = null, contaSel = null, caixaId = null, socket = null;
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) } });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.message || `HTTP ${r.status}`);
+  return data;
+}
+function log(m) { const l = $('log'); if (!l) return; const d = document.createElement('div'); d.textContent = `[${new Date().toLocaleTimeString()}] ${m}`; l.prepend(d); }
+
+async function boot() {
+  if (!token) return;
+  try {
+    const me = await api('/auth/me');
+    setUser(me); carregarCaixa(); carregarMesas(); connectWS();
+  } catch { token = ''; }
+}
+function setUser(u) { $('userPill').textContent = `${u.nome} · ${u.papel}`; $('userPill').className = 'pill ok'; }
+$('loginForm').onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const r = await api('/auth/pin', { method: 'POST', body: JSON.stringify({ email: $('email').value, pin: $('pin').value }) });
+    token = r.access_token; localStorage.setItem('pdv_token', token);
+    setUser(r.usuario); carregarCaixa(); carregarMesas(); connectWS();
+  } catch (e) { alert(e.message); }
+};
+function connectWS() {
+  if (!window.io) return;
+  socket?.disconnect();
+  socket = io({ transports: ['websocket', 'polling'], auth: { token } });
+  socket.on('connect', () => socket.emit('join', { rooms: ['caixa'] }));
+  for (const ev of ['conta.criada', 'conta.paga', 'conta.atualizada', 'conta.fechada', 'caixa.aberto', 'caixa.movimento', 'caixa.fechado', 'pedido.fechado', 'mesa.status'])
+    socket.on(ev, () => { carregarCaixa(true); carregarMesas(true); if (contaSel) carregarConta(contaSel, true); });
+}
+
+// ---- caixa ----
+async function carregarCaixa(quiet) {
+  if (!token) return;
+  if (quiet && document.activeElement && $('caixaBox').contains(document.activeElement)) return; // digitando: não re-renderiza
+  try {
+    const mine = await api('/caixas/meu-aberto');
+    if (!mine) {
+      caixaId = null; $('cxPill').textContent = 'caixa fechado'; $('cxPill').className = 'pill';
+      $('caixaBox').innerHTML = `<form id="abrirForm"><div class="row">
+        <input id="fundo" type="number" value="200" min="0" step="0.01" placeholder="Fundo" />
+        <button class="ok" type="submit">Abrir caixa</button></div></form>`;
+      $('abrirForm').onsubmit = async (e) => {
+        e.preventDefault();
+        try { await api('/caixas/abrir', { method: 'POST', body: JSON.stringify({ valorInicial: Number($('fundo').value) }) }); carregarCaixa(); }
+        catch (e2) { alert(e2.message); }
+      };
+      return;
+    }
+    const d = await api(`/caixas/${mine.id}`);
+    caixaId = d.id;
+    $('cxPill').textContent = `caixa #${d.id} aberto`; $('cxPill').className = 'pill ok';
+    const r = d.resumo;
+    $('caixaBox').innerHTML = `
+      <table>
+        <tr><td>Fundo</td><td class="num">${R$(r.valor_inicial)}</td></tr>
+        <tr><td>Dinheiro</td><td class="num">${R$(r.dinheiro)}</td></tr>
+        <tr><td>PIX</td><td class="num">${R$(r.pix)}</td></tr>
+        <tr><td>Crédito / Débito</td><td class="num">${R$(r.cartao_credito)} / ${R$(r.cartao_debito)}</td></tr>
+        <tr><td>Sangrias</td><td class="num">− ${R$(r.sangrias)}</td></tr>
+        <tr><td><b>Esperado</b></td><td class="num"><b>${R$(r.valor_esperado)}</b></td></tr>
+        <tr><td class="hint">↳ em espécie (gaveta)</td><td class="num hint">${R$(r.valor_esperado_dinheiro ?? r.valor_esperado)}</td></tr>
+      </table>
+      <form id="movForm" style="margin-top:8px"><div class="row">
+        <select id="movTipo"><option>SANGRIA</option><option>SUPRIMENTO</option></select>
+        <input id="movValor" type="number" min="0.01" step="0.01" placeholder="Valor" />
+      </div><input id="movMotivo" placeholder="Motivo (obrigatório)" /><button class="warn" type="submit">Lançar</button></form>
+      <form id="fecharForm" style="margin-top:8px"><div class="row">
+        <input id="contado" type="number" min="0" step="0.01" placeholder="Contado na gaveta (espécie)" />
+        <button class="ok" type="submit">Fechar caixa</button></div></form>
+      <div id="log"></div>`;
+    $('movForm').onsubmit = async (e) => {
+      e.preventDefault();
+      try { await api(`/caixas/${d.id}/movimentos`, { method: 'POST', body: JSON.stringify({ tipo: $('movTipo').value, valor: Number($('movValor').value), motivo: $('movMotivo').value }) }); carregarCaixa(); }
+      catch (e2) { alert(e2.message); }
+    };
+    $('fecharForm').onsubmit = async (e) => {
+      e.preventDefault();
+      try {
+        const f = await api(`/caixas/${d.id}/fechar`, { method: 'POST', body: JSON.stringify({ valorContado: Number($('contado').value }) });
+        alert(f.conferencia.mensagem + `\nGaveta esperada ${R$(f.conferencia.esperado)} · Contado ${R$(f.conferencia.contado)}` + (f.conferencia.esperado_total != null ? `\n(Total geral ${R$(f.conferencia.esperado_total)} — PIX/cartão conferem no extrato)` : ''));
+        carregarCaixa();
+      } catch (e2) { alert(e2.message); }
+    };
+  } catch (e) { if (!quiet) alert(e.message); }
+}
+
+// ---- mesas + contas ----
+async function carregarMesas(quiet) {
+  if (!token) return;
+  try {
+    const mesas = (await api('/mesas/mapa')).filter((m) => m.pedido_id);
+    $('mesas').innerHTML = mesas.length ? '' : '<p class="hint">Nenhum pedido aberto.</p>';
+    for (const m of mesas) {
+      const b = document.createElement('button');
+      b.className = 'mesa-btn' + (pedidoSel === m.pedido_id ? ' sel' : '');
+      b.innerHTML = `<b>Mesa ${m.numero}</b> <span class="tag">${m.status}</span> <span class="hint">${m.garcom || ''} · ${m.ocupacao_min ?? 0}min</span>`;
+      b.onclick = () => { mesaSel = m; pedidoSel = m.pedido_id; contaSel = null; carregarMesas(true); carregarContas(); $('conta').innerHTML = 'Selecione uma conta.'; };
+      $('mesas').appendChild(b);
+    }
+  } catch (e) { if (!quiet) alert(e.message); }
+}
+async function carregarContas() {
+  if (!pedidoSel) return;
+  const contas = await api(`/pedidos/${pedidoSel}/contas`);
+  $('contas').innerHTML = '<h2>Contas do pedido</h2>' + (contas.length ? '' : '<p class="hint">Sem contas — use “Pedir conta”.</p>');
+  for (const c of contas) {
+    const b = document.createElement('button');
+    b.className = 'mesa-btn' + (contaSel === c.id ? ' sel' : '');
+    b.innerHTML = `<b>${c.descricao}</b> <span class="tag">${c.status}</span> <span class="hint">total ${R$(c.total)} · pago ${R$(c.pago)} · <b>saldo ${R$(c.saldo)}</b></span>`;
+    b.onclick = () => { contaSel = c.id; carregarContas(); carregarConta(c.id); };
+    $('contas').appendChild(b);
+  }
+  const row = document.createElement('div');
+  row.className = 'row'; row.style.marginTop = '8px';
+  row.innerHTML = `<button class="ghost" id="btnNova">＋ Nova conta</button><button class="ghost" id="btnDiv">÷ Dividir igual</button>`;
+  $('contas').appendChild(row);
+  $('btnNova').onclick = async () => {
+    const desc = prompt('Descrição da conta:', `Conta — Mesa ${mesaSel?.numero}`);
+    if (desc === null) return;
+    try { const c = await api(`/pedidos/${pedidoSel}/contas`, { method: 'POST', body: JSON.stringify({ descricao: desc || undefined }) }); contaSel = c.id; carregarContas(); carregarConta(c.id); }
+    catch (e) { alert(e.message); }
+  };
+  $('btnDiv').onclick = async () => {
+    const n = Number(prompt('Dividir em quantas partes iguais?', '2'));
+    if (!n || n < 2) return;
+    try { await api(`/pedidos/${pedidoSel}/dividir-igual`, { method: 'POST', body: JSON.stringify({ partes: n }) }); contaSel = null; carregarContas(); } 
+    catch (e) { alert(e.message); }
+  };
+}
+async function carregarConta(id, quiet) {
+  try {
+    const c = await api(`/contas/${id}`);
+    const itens = c.valor_rateio != null
+      ? `<tr><td>Rateio fixo</td><td class="num">${R$(c.valor_rateio)}</td></tr>`
+      : c.itens.map((i) => `<tr><td>${i.quantidade}x ${i.produto}</td><td class="num">${R$(i.quantidade * i.preco_unitario)}</td></tr>`).join('') || '<tr><td colspan="2" class="hint">Sem itens — use “＋ alocar pendentes” ou “Pedir conta”.</td></tr>';
+    const pgs = c.pagamentos.map((p) => `<tr><td>${p.forma.replace(/_/g, ' ')} <span class="tag">${p.status}</span></td><td class="num">${R$(p.valor)}${p.valor_troco ? ` (troco ${R$(p.valor_troco)})` : ''}</td>
+      <td>${p.status === 'APROVADO' ? `<button class="ghost" onclick="estornar(${p.id})">estornar</button>` : ''}</td></tr>`).join('');
+    $('conta').innerHTML = `
+      <p><b>${c.descricao}</b> <span class="tag">${c.status}</span> <span class="hint">serviço ${c.incluir_servico ? c.servico_pct + '%' : 'off'}</span></p>
+      <table>${itens}</table>
+      <table><tr><td>Subtotal</td><td class="num">${R$(c.resumo.subtotal_itens)}</td></tr>
+      <tr><td>Serviço</td><td class="num">${R$(c.resumo.servico_valor)}</td></tr>
+      <tr><td class="total">TOTAL</td><td class="num total">${R$(c.resumo.total)}</td></tr>
+      <tr><td>Pago</td><td class="num">${R$(c.resumo.pago)}</td></tr>
+      <tr><td><b>SALDO</b></td><td class="num saldo ${c.resumo.saldo === 0 ? 'zero' : ''}">${R$(c.resumo.saldo)}</td></tr></table>
+      ${c.status === 'ABERTA' ? `<form id="pgForm"><div class="row">
+        <select id="pgForma"><option>PIX</option><option>DINHEIRO</option><option>CARTAO_CREDITO</option><option>CARTAO_DEBITO</option><option>VALE_REFEICAO</option><option>VALE_ALIMENTACAO</option><option>OUTRO</option></select>
+        <input id="pgValor" type="number" min="0.01" step="0.01" value="${c.resumo.saldo}" /></div>
+        <div class="row"><input id="pgTroco" type="number" min="0" step="0.01" placeholder="Troco (só dinheiro)" /><input id="pgRef" placeholder="Referência (PIX/aut)" /></div>
+        <button class="ok" type="submit">Receber</button></form>` : '<p class="hint">Conta ' + c.status.toLowerCase() + '.</p>'}
+      ${pgs ? `<h2 style="margin-top:8px">Pagamentos</h2><table>${pgs}</table>` : ''}
+      ${c.status === 'ABERTA' ? `<div class="row" style="margin-top:8px">
+        <button class="ghost" id="btnServ">${c.incluir_servico ? '− sem os 10%' : '+ com os 10%'}</button>
+        <button class="ghost" id="btnDesc">% Desconto${c.desconto_valor ? ` (${R$(c.desconto_valor)})` : ''}</button>
+      </div>` : ''}
+      <div class="row" style="margin-top:8px"><button class="ghost" id="btnRecibo">🧾 Recibo</button>
+      ${c.status === 'ABERTA' && c.valor_rateio == null ? '<button class="ghost" id="btnAlocar">＋ alocar pendentes</button>' : ''}
+      ${c.status === 'ABERTA' && c.resumo.saldo === 0 ? '<button class="ok" id="btnFecharConta">✅ Fechar conta</button>' : ''}</div>
+      <div id="reciboBox"></div>`;
+    const form = $('pgForm');
+    if (form) form.onsubmit = async (e) => {
+      e.preventDefault();
+      try {
+        await api(`/contas/${id}/pagamentos`, { method: 'POST', body: JSON.stringify({
+          forma: $('pgForma').value, valor: Number($('pgValor').value),
+          valorTroco: Number($('pgTroco').value) || 0, referencia: $('pgRef').value || undefined,
+          ...(caixaId ? { caixaId } : {}) }) });
+        carregarConta(id); carregarContas(); carregarCaixa(true);
+      } catch (e2) { alert(e2.message); }
+    };
+    if ($('btnServ')) $('btnServ').onclick = async () => {
+      try { await api(`/contas/${id}`, { method: 'PATCH', body: JSON.stringify({ incluirServico: !c.incluir_servico }) }); carregarConta(id); carregarContas(); }
+      catch (e2) { alert(e2.message); }
+    };
+    if ($('btnDesc')) $('btnDesc').onclick = async () => {
+      const v = prompt('Desconto em R$ (0 p/ remover):', String(c.desconto_valor || 0));
+      if (v === null) return;
+      try { await api(`/contas/${id}`, { method: 'PATCH', body: JSON.stringify({ descontoValor: Number(v) }) }); carregarConta(id); carregarContas(); }
+      catch (e2) { alert(e2.message); }
+    };
+    if ($('btnAlocar')) $('btnAlocar').onclick = async () => {
+      try { await api(`/contas/${id}/alocar-pendentes`, { method: 'POST', body: '{}' }); carregarConta(id); carregarContas(); }
+      catch (e2) { alert(e2.message); }
+    };
+    if ($('btnFecharConta')) $('btnFecharConta').onclick = async () => {
+      try { await api(`/contas/${id}/fechar`, { method: 'POST', body: '{}' }); carregarConta(id); carregarContas(); carregarMesas(true); }
+      catch (e2) { alert(e2.message); }
+    };
+    $('btnRecibo').onclick = async () => {
+      const r = await api(`/contas/${id}/recibo`);
+      $('reciboBox').innerHTML = `<pre class="recibo">${r.texto}</pre><button class="ghost" onclick="window.print()">🖨 Imprimir</button>`;
+    };
+  } catch (e) { if (!quiet) alert(e.message); }
+}
+window.estornar = async (pgId) => {
+  const motivo = prompt('Motivo do estorno:', '');
+  if (motivo === null) return;
+  try { await api(`/pagamentos/${pgId}/cancelar`, { method: 'POST', body: JSON.stringify({ motivo: motivo || undefined }) }); carregarConta(contaSel); carregarContas(); carregarCaixa(true); }
+  catch (e) { alert(e.message); }
+};
+$('btnMesas').onclick = () => carregarMesas();
+$('btnConta').onclick = async () => {
+  if (!pedidoSel) return alert('Selecione uma mesa.');
+  try { await api(`/pedidos/${pedidoSel}/imprimir-conta`, { method: 'POST', body: '{}' }); carregarMesas(true); carregarContas(); }
+  catch (e) { alert(e.message); }
+};
+$('btnFecharPed').onclick = async () => {
+  if (!pedidoSel) return alert('Selecione uma mesa.');
+  if (!confirm('Fechar pedido e liberar a mesa?')) return;
+  try { await api(`/pedidos/${pedidoSel}/fechar`, { method: 'POST', body: '{}' }); pedidoSel = null; contaSel = null; $('contas').innerHTML = ''; $('conta').innerHTML = 'Selecione uma mesa.'; carregarMesas(true); }
+  catch (e) { alert(e.message); }
+};
+boot();
+</script>
+</body>
+</html>

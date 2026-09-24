@@ -163,9 +163,9 @@ npm test                         # roda db/teste-schema.mjs (19 asserções)
 | Fase | Entrega |
 |------|---------|
 | 0 | ✅ Schema + seed + regras no banco (este repositório) |
-| 1 | API: cadastros (insumos, produtos, fichas, mesas) + auth PIN; PWA garçom: mesa → rascunho → remessas → envio (sem impressão ainda: fila no banco já cria o job) |
-| 2 | Print agent ESC/POS + reimpressão de item cancelado; KDS da cozinha/pronto (WS) |
-| 3 | Contas: impressão de conta, divisão por item/igualitária, 10%, pagamentos parciais; caixa: abertura, sangria/suprimento, fechamento com conferência |
+| 1 | ✅ **API pronta (esta branch)**: cadastros + auth PIN + atendimento (pedidos/remessas/envio) + WS + fila p/ print-agent · 🔲 PWA do garçom (Next.js) — demo provisória em `/demo.html` |
+| 2 | ✅ **Pronto (esta branch)**: print-agent ESC/POS (:9100, modo virtual p/ dev) + ticket automático de cancelamento + reimpressão manual + KDS (`/kds.html`) em tempo real |
+| 3 | ✅ **Pronto (esta branch)**: contas (pedir conta, divisão por item/igualitária, 10%, pagamentos parciais, estorno, recibo) + caixa (abertura, sangria/suprimento, fechamento com conferência) + tela `/caixa.html` |
 | 4 | Estoque avançado: recebimento de compra c/ atualização de custo, inventário c/ diferença, custo-margem por prato, CMV e perda |
 | 5 | Relatórios (PRD/gerencial), Pix com QR dinâmico (gateway), multi-filia, NF-e/CF-e se exigido pelo município |
 
@@ -175,3 +175,215 @@ npm test                         # roda db/teste-schema.mjs (19 asserções)
 - **Troco**: dinheiro guarda `valor` recebido e `valor_troco`; o caixa confere o líquido.
 - **Combo "serve 2"**: picanha com peso na ficha e preço fixo — custo sai por porção; se vender meia-porção, é outro produto com outra ficha (não dividir quantidade fracionária de prato).
 - **Perda do dia**: registrar `PERDA` no estoque (kitchen waste) — sem isso o CMV mente.
+
+---
+
+## 8. Fase 1 — API NestJS (nesta branch)
+
+Código em `apps/api` (NestJS 10 + Socket.IO) e modelo Prisma em
+`packages/db/schema.prisma` (tipos + conferência de drift; views/triggers
+continuam no `schema.sql`).
+
+### Como rodar (2 modos)
+
+```bash
+# A) Dev rápido — SEM docker/postgres (banco embutido PGlite em memória):
+cd apps/api
+npm install
+npm run start:dev     # http://localhost:3001 — demo: /demo.html — health: /health
+
+# B) Produção/docker — Postgres real:
+cd pdv-restaurante
+docker compose up -d --build   # db (5433) + api (3001) + adminer (8081)
+# a API usa DATABASE_URL=postgres://pdv:pdv@db:5432/pdv
+```
+
+Variáveis (`apps/api/.env`, ver `.env.example`): `PORT`, `DATABASE_URL`
+(vazio = PGlite), `JWT_SECRET`, `JWT_EXPIRES_IN`, `PGLITE_DIR` (persistir dev).
+
+### Teste de fumaça E2E (19 checks)
+
+```bash
+cd apps/api
+npm run smoke   # build + sobe a API + fluxo garçom completo + derruba
+```
+
+Cobre: login PIN, 401 sem token, mapa (12 mesas), abrir pedido, trava de
+1 pedido/mesa (409), rascunho com snapshot de preço, envio com 1 job por
+estação, baixa automática de estoque, KDS avançando item, 403 de RBAC,
+alertas e total do pedido.
+
+### Login / PINs do seed
+
+`POST /auth/pin` com `{ "email": "...", "pin": "1111" }` (ou `usuarioId`).
+Na primeira subida a API converte os `pin_hash` placeholder do seed para
+bcrypt: **Ana 1111 · Bruno 2222 · Carla 3333 · Roberto 4444 · Diego 5555**.
+Use `Authorization: Bearer <access_token>` nas demais rotas.
+
+### Endpoints principais
+
+| Área | Rotas |
+|------|-------|
+| Auth | `POST /auth/pin` · `GET /auth/me` · `POST /auth/pin/trocar` |
+| Usuários (gerente) | `GET/POST /usuarios` · `PATCH /usuarios/:id` · `POST /usuarios/:id/reset-pin` |
+| Cardápio | `GET /estacoes` · `GET/POST /categorias` · `GET /produtos?q=&categoriaId=` · `GET /produtos/:id` (ficha+custo) · `PUT /produtos/:id/ficha` |
+| Estoque | `GET /estoque/saldos` · `GET /estoque/alertas` · `GET/POST /insumos` · `POST /estoque/movimentos` (ENTRADA/AJUSTE/PERDA/CONSUMO — saída de venda é automática) |
+| Mesas | `GET /areas` · `GET /mesas/mapa` · `GET /mesas/:id` · `POST/PATCH /mesas` |
+| **Atendimento** | `POST /pedidos {mesaId}` · `POST /pedidos/:id/itens` (rascunho) · `PATCH/DELETE item` · **`POST /pedidos/:id/enviar {tipo, itemIds}`** (baixa estoque + jobs) · `PATCH .../status` (KDS) · `POST .../cancelar` |
+| Impressão (Fase 2) | `GET /impressao-log?status=PENDENTE` · `GET/PATCH /impressao-log/:id` |
+| Realtime | Socket.IO: `join {rooms: ["mesa:3","cozinha","bar","caixa"]}` → eventos `pedido.enviado`, `item.adicionado`, `item.status`, `mesa.status` |
+
+Papéis (RBAC): `GARCOM · CAIXA · COZINHEIRO · BAR · GERENTE · ADMIN`
+(escritas de cadastro = gerente; KDS = cozinha/bar; salão = garçom/caixa).
+
+### Fluxo do garçom (demo `/demo.html`)
+
+1. Login com PIN → 2. clica mesa LIVRE → Abrir pedido →
+3. lança itens (rascunho, com obs/ponto) → 4. marca itens + tipo da onda →
+**Enviar** → jobs na fila + baixa no estoque + evento no WS.
+
+---
+
+## 11. Auditoria — melhorias e correções (nesta branch)
+
+Revisão completa das Fases 1–3 (28 itens). Smoke: 62 checks ✔ · Schema ✔ ·
+E2E print-agent ✔.
+
+### Dinheiro (alta)
+- `fecharPedido` bloqueia item entregue sem cobertura em conta válida
+  (rateio por valor fechado assume o pedido — responsabilidade do operador).
+- Estorno bloqueado em caixa já fechado e em pedido fechado; registra quem
+  estornou (`ESTORNO por <nome>`); escritas de conta exigem pedido aberto.
+- Concorrência: pagamentos/divisões/conta/impressão sob `SELECT FOR UPDATE`
+  no pedido + transações (aninhadas participam da de fora); unique parcial
+  garante 1 caixa aberto por operador (409 na corrida).
+- PGlite: mutex serializa transações (conexão única compartilhada).
+
+### Segurança (alta)
+- WS exige JWT no handshake; sala `caixa` restrita a CAIXA/GERENTE/ADMIN
+  (telas e agente enviam o token).
+- Login PIN: 5 erros = bloqueio 5 min (429); compare falso p/ usuário
+  inexistente (anti-enumeração). CORS configurável via `CORS_ORIGIN`.
+
+### Regras (média)
+- Rateio: view deriva `servico_valor` do valor fechado → recibo mostra os
+  10% e a gorjeta do garçom não zera (totais cobrados inalterados).
+- Desconto/serviço/rateio nunca deixam o total abaixo do já pago; total
+  nunca negativo; `fechar` rejeita saldo negativo.
+- Cancelar item com pagamento → 400 (estornar antes); `cancelarPedido`
+  cancela contas sem pagamento junto (nunca órfãs).
+- Mesa: `OCUPADA`/`AGUARDANDO_CONTA` são do sistema; LIVRE/RESERVADA só sem
+  pedido aberto; emite `mesa.status`.
+- Impressão: claim atômico (`POST /impressao-log/claim`, status
+  `EM_IMPRESSAO`, retomada após 5 min) — 2 agentes não duplicam; baixa
+  restrita a COZINHA/BAR/GERENTE/ADMIN; re-ack → 409; job filtra item
+  cancelado. Evento novo `conta.atualizada` no PATCH de conta.
+
+### Robustez (baixa)
+- Tetos: `servicoPct` ≤ 100 (DTO + CHECK), `partes` ≤ 50, `percaPct` 0–99,
+  mínimos de insumo/movimento; filtros inválidos → 400 (não 500); catches
+  23505/23503 faltantes; e-mail único + sem auto-bloqueio/último gerente;
+  `valor_esperado_dinheiro` (gaveta) no resumo e na tela do caixa.
+
+### Migração (banco existente)
+Bancos criados antes desta mudança precisam (fora de transação p/ o enum):
+`ALTER TYPE tipo_status_impressao ADD VALUE 'EM_IMPRESSAO';` + recriar
+`ux_impressao_job`, `ux_caixa_aberto_operador`, `ux_usuario_email`, as views
+`vw_conta_resumo`/`vw_caixa_resumo` e os CHECKs — ou reaplicar `schema.sql`
+do zero (PGlite/dev já faz isso sozinho).
+
+## 12. Fase 4 — Estoque avançado (nesta branch)
+
+### Recebimento de compra (`POST /estoque/recebimento`, GERENTE/ADMIN)
+- Nota atômica: vários insumos de uma vez, com `fornecedorId`,
+  `documento` (NF-e) e observação opcional.
+- Quantidade na **un. de compra** quando o insumo tem uma (saco/cx ×
+  `fator_compra` → un. de estoque); sem un. de compra, entra direto.
+- Item com `custoTotal` recalcula o **custo médio ponderado**
+  `(saldo×custo + entrada×custo)/(saldo + entrada)` (saldo ≤ 0 assume o
+  custo da entrada); item sem custo só soma saldo. Insumo repetido na
+  nota → 400.
+
+### Inventário (`/estoque/inventarios`, GERENTE/ADMIN)
+- Um `ABERTO` por vez (2º → 409). Contagens na un. de estoque, com
+  upsert por (inventário, insumo) e trava contra o mesmo insumo contado
+  em dois inventários abertos.
+- Detalhe mostra sistema × contado, diferença, valor ao custo médio e
+  resumo (sobras/faltas/valor). Fechar exige ≥ 1 contagem e gera
+  `AJUSTE_POSITIVO`/`AJUSTE_NEGATIVO` (origem `CONTAGEM`) por diferença
+  não-zero; zerar não gera movimento. Cancelar descarta as contagens.
+- Novas tabelas: `inventario` + `inventario_contagem` (bancos antigos:
+  reaplicar o schema ou rodar o bloco "Inventário (Fase 4)" dele).
+
+### Custos
+- `GET /produtos/:id/custo`: ingrediente a ingrediente (qtd líquida →
+  bruta pela perca → custo), custo da receita/porção e margem — mesma
+  fórmula da baixa e da `vw_custo_produto`.
+- `GET /produtos?margemAbaixoDe=X`: só pratos com margem < X%.
+- `GET /estoque/cmv?de=&ate=`: CMV das baixas (`SAIDA_VENDA` − estornos
+  de cancelamento) × receita por prato; `GET /estoque/perdas`: perdas
+  avaliadas (custo do movimento ou atual) + consumo interno separado.
+  Período default = mês corrente até hoje.
+- Tela `/estoque.html`: recebimento, saldos, inventário, CMV, perdas e
+  custo do prato (linkada em demo/KDS/caixa). Smoke: 83 checks ✔.
+
+## 13. Correções garçom/mesa/caixa (nesta branch)
+
+Caçadas exercitando o fluxo real (abrir → lançar → enviar → pedir conta
+→ pagar → fechar) e confirmadas antes/depois no preview:
+
+### Conta (a principal)
+- Item lançado **depois** de pedir a conta sumia: o 2º "pedir conta"
+  ignorava as sobras e o `fechar` travava a mesa ("sem conta cobrindo").
+  Agora o `imprimir-conta` aloca as sobras na conta única aberta, ou abre
+  uma conta nova só com elas quando a divisão é múltipla/rateio.
+- Novo `POST /contas/:id/alocar-pendentes` (botão "＋ alocar pendentes"
+  no caixa) p/ encher conta avulsa/rateio manual; hint que mandava alocar
+  "na demo do garçom" (onde não há alocação) corrigida.
+
+### Caixa
+- `fechar` comparava o contado na **gaveta** com o esperado **total**
+  (PIX/cartão juntos) → "falta" fantasma em todo dia com PIX. Agora
+  confere contra `valor_esperado_dinheiro` e mostra o total geral como
+  referência (`conferencia.esperado_total`); UI deixa claro que o contado
+  é a espécie da gaveta.
+- Sangria limitada ao esperado em espécie (com lock); serviço (10%) e
+  desconto editáveis na tela (gorjeta é facultativa); botão "Fechar
+  conta" quando o saldo zera; refresh por WS não apaga mais digitação.
+
+### Garçom/mesa
+- `demo.html`: produtos não carregavam após o login (select vazio →
+  impossível lançar item); botão "🧾 Pedir conta" no pedido; troca de
+  mesa via WS `leave`/`join` sem reconectar o socket; guards de envio.
+- `GET /pedidos?status=` e `?mesaId=` inválidos davam 500 → 400.
+
+### Produção (invisível no preview)
+- `DbService.query/execute` ignoravam a transação corrente no Postgres
+  real (pool direto) — escritas via `this.db` dentro de `transaction()`
+  fugiam da tx. Agora usam a conexão da tx (com `rawQuery` p/ o PGlite
+  não entrar em recursão). Smoke: 96 checks ✔ (13 novos).
+
+## 14. Fase 5 (parte 1) — Relatórios gerenciais (nesta branch)
+
+Módulo `relatorios` (GERENTE/ADMIN), período `?de=&ate=` (default mês
+corrente até hoje), tela `/relatorios.html` linkada nas demais:
+
+- `GET /relatorios/vendas`: recebido (pagamentos aprovados) total, por
+  forma e por dia; pedidos fechados, ticket médio, descontos e serviço.
+- `GET /relatorios/produtos`: curva ABC sobre itens vendidos (pedidos
+  fechados, sem cancelados) — qtd, receita, % acumulado, classe A/B/C,
+  CMV das baixas e margem bruta. `&limite=` (1–200, padrão 50).
+- `GET /relatorios/categorias`: qtd e receita por categoria.
+- `GET /relatorios/garcons`: pedidos, receita dos itens, ticket médio e
+  serviço gerado por garçom.
+- `GET /relatorios/mesas`: giro — ocupações, tempo médio (abertura →
+  fechamento) e receita por mesa.
+- `GET /relatorios/caixas`: turnos iniciados no período — vendido,
+  suprimentos, sangrias e diferença de fechamento por operador.
+
+Convenção: dinheiro = pagamento aprovado (`pago_em`); itens/categorias/
+garçons/mesas = pedidos FECHADOS (`fechado_em`). Smoke: 106 checks ✔
+(10 novos, por delta p/ não depender de dados acumulados).
+
+Restante da Fase 5 (futuro): Pix com QR dinâmico (PSP), multi-filial e
+fiscal (NFC-e/CF-e conforme município/UF).

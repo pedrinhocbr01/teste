@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>KDS — Cozinha / Bar</title>
+<script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+<style>
+  :root { --bg:#0b0d10; --card:#161b22; --line:#2a323e; --txt:#eef2f7; --mut:#9aa5b3;
+          --ok:#2fbf71; --warn:#f0a020; --bad:#e05555; --acc:#3b82f6; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:16px/1.45 system-ui,sans-serif; }
+  header { padding:10px 16px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; flex-wrap:wrap; position:sticky; top:0; background:var(--bg); z-index:5; }
+  header h1 { font-size:17px; margin:0; }
+  .pill { padding:3px 12px; border-radius:20px; font-size:13px; background:var(--card); border:1px solid var(--line); }
+  .pill.ok { color:var(--ok); border-color:var(--ok); }
+  .pill.live { color:var(--acc); border-color:var(--acc); }
+  input,select,button { font:inherit; border-radius:8px; border:1px solid var(--line); background:#11151b; color:var(--txt); padding:9px 12px; }
+  button { background:var(--acc); border:none; cursor:pointer; font-weight:700; }
+  button.ghost { background:transparent; border:1px solid var(--line); }
+  button.big { width:100%; padding:13px; font-size:16px; margin-top:8px; }
+  button.go { background:var(--warn); color:#111; } button.done { background:var(--ok); color:#06130c; }
+  .station { display:flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .station button { border-radius:0; background:transparent; padding:9px 18px; }
+  .station button.on { background:var(--acc); }
+  main { padding:12px; max-width:1600px; margin:auto; }
+  .cols { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+  @media (max-width:900px){ .cols{ grid-template-columns:1fr; } }
+  .col { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px; min-height:200px; }
+  .col h2 { font-size:13px; margin:2px 2px 10px; text-transform:uppercase; letter-spacing:1px; color:var(--mut); display:flex; justify-content:space-between; }
+  .card { background:#0f141b; border:1px solid var(--line); border-left:6px solid var(--mut); border-radius:10px; padding:10px 12px; margin-bottom:10px; }
+  .card.t-ok{ border-left-color:var(--ok);} .card.t-warn{ border-left-color:var(--warn);} .card.t-bad{ border-left-color:var(--bad); animation:pulse 1.2s infinite; }
+  @keyframes pulse { 50% { background:#1c1214; } }
+  .card .top { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+  .card .mesa { font-size:22px; font-weight:800; }
+  .card .timer { font-size:20px; font-weight:800; font-variant-numeric:tabular-nums; }
+  .t-ok .timer{ color:var(--ok);} .t-warn .timer{ color:var(--warn);} .t-bad .timer{ color:var(--bad);}
+  .card .prod { font-size:17px; font-weight:700; margin-top:2px; }
+  .card .obs { color:#ffd98a; font-weight:600; margin-top:2px; }
+  .card .meta { font-size:12px; color:var(--mut); margin-top:4px; }
+  #cancelados { margin-top:12px; }
+  #cancelados .card { border-left-color:var(--bad); opacity:.85; }
+  #cancelados .prod { text-decoration:line-through; }
+  .hint{ font-size:12px; color:var(--mut); }
+  #loginBar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🔥 KDS</h1>
+  <span id="statusPill" class="pill">conectando…</span>
+  <span id="wsPill" class="pill">ws…</span>
+  <div class="station">
+    <button id="btnCoz" class="on">COZINHA</button>
+    <button id="btnBar">BAR</button>
+  </div>
+  <span style="flex:1"></span>
+  <div id="loginBar">
+    <select id="email">
+      <option value="roberto@casadofogo.com">Roberto (COZINHEIRO)</option>
+      <option value="diego@casadofogo.com">Diego (GERENTE)</option>
+      <option value="ana@casadofogo.com">Ana (GARÇOM)</option>
+    </select>
+    <input id="pin" value="4444" maxlength="6" size="6" inputmode="numeric" />
+    <button id="btnLogin">Entrar</button>
+  </div>
+  <a href="/demo.html" style="color:var(--mut); font-size:13px">← demo garçom</a>
+  <a href="/caixa.html" style="color:var(--mut); font-size:13px">💰 caixa</a>
+  <a href="/estoque.html" style="color:var(--mut); font-size:13px">📦 estoque</a>
+  <a href="/relatorios.html" style="color:var(--mut); font-size:13px">📊 relatórios</a>
+</header>
+<main>
+  <div class="cols">
+    <div class="col"><h2>🆕 Novos <span id="c1"></span></h2><div id="col-novo"></div></div>
+    <div class="col"><h2>🍳 Em preparo <span id="c2"></span></h2><div id="col-prep"></div></div>
+    <div class="col"><h2>✅ Prontos <span id="c3"></span></h2><div id="col-pronto"></div></div>
+  </div>
+  <div id="cancelados"><h2 class="hint">⛔ Cancelados (15 min)</h2><div id="col-canc"></div></div>
+  <p class="hint" id="metaLine"></p>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let token = localStorage.getItem('pdv_token') || '';
+let estacao = 'COZINHA';
+let tempoMedio = 25;
+let socket = null;
+let knownIds = new Set();
+let audioCtx = null;
+
+function beep() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const t = audioCtx.currentTime;
+    for (const [f, d] of [[880, 0], [880, 0.18], [1170, 0.36]]) {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = 'sine'; o.frequency.value = f;
+      g.gain.setValueAtTime(0.25, t + d);
+      g.gain.exponentialRampToValueAtTime(0.001, t + d + 0.15);
+      o.connect(g).connect(audioCtx.destination);
+      o.start(t + d); o.stop(t + d + 0.16);
+    }
+  } catch {}
+}
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) } });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.message || `HTTP ${r.status}`);
+  return data;
+}
+function timerClass(min) {
+  if (min >= tempoMedio) return 't-bad';
+  if (min >= tempoMedio / 2) return 't-warn';
+  return 't-ok';
+}
+function card(i, action) {
+  const obs = [i.observacao, i.ponto_carne ? 'Ponto: ' + i.ponto_carne : '']
+    .filter(Boolean).map((o) => `<div class="obs">⚠ ${o}</div>`).join('');
+  const btn = action ? `<button class="big ${action.cls}" onclick="avancar(${i.pedido_id},${i.item_id},'${action.to}')">${action.label}</button>` : '';
+  return `<div class="card ${timerClass(i.espera_min)}">
+    <div class="top"><span class="mesa">MESA ${i.mesa_numero}</span><span class="timer">${i.espera_min}min</span></div>
+    <div class="prod">${i.quantidade}x ${i.produto}</div>${obs}
+    <div class="meta">${i.remessa_tipo} · ${i.garcom || ''} · ped #${i.pedido_id}</div>${btn}</div>`;
+}
+window.avancar = async (pedidoId, itemId, status) => {
+  try { await api(`/pedidos/${pedidoId}/itens/${itemId}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }); carregar(); }
+  catch (e) { alert(e.message); }
+};
+async function carregar() {
+  if (!token) return;
+  try {
+    const f = await api(`/kds/fila?estacao=${estacao}`);
+    tempoMedio = f.tempoMedioPratoMin || 25;
+    const novos = f.items.filter((i) => i.status === 'ENVIADO');
+    // bipe para ticket novo
+    for (const i of novos) {
+      if (!knownIds.has(i.item_id)) beep();
+      knownIds.add(i.item_id);
+    }
+    // limpa ids que sumiram da fila
+    const vivos = new Set(f.items.map((i) => i.item_id));
+    knownIds = new Set([...knownIds].filter((id) => vivos.has(id)));
+    $('col-novo').innerHTML = novos.map((i) => card(i, { to: 'EM_PREPARO', label: '▶ Iniciar preparo', cls: 'go' })).join('') || '<p class="hint">—</p>';
+    $('col-prep').innerHTML = f.items.filter((i) => i.status === 'EM_PREPARO').map((i) => card(i, { to: 'PRONTO', label: '✅ Marcar pronto', cls: 'done' })).join('') || '<p class="hint">—</p>';
+    $('col-pronto').innerHTML = f.items.filter((i) => i.status === 'PRONTO').map((i) => card(i, { to: 'ENTREGUE', label: '🛎 Marcar entregue', cls: '' })).join('') || '<p class="hint">—</p>';
+    $('col-canc').innerHTML = f.cancelados.map((i) => card(i, null)).join('') || '<p class="hint">—</p>';
+    $('c1').textContent = `(${novos.length})`;
+    $('c2').textContent = `(${f.items.filter((i) => i.status === 'EM_PREPARO').length})`;
+    $('c3').textContent = `(${f.items.filter((i) => i.status === 'PRONTO').length})`;
+    $('metaLine').textContent = `Tempo médio configurado: ${tempoMedio}min · atualizado ${new Date().toLocaleTimeString()}`;
+    $('statusPill').textContent = 'online'; $('statusPill').className = 'pill ok';
+  } catch (e) {
+    $('statusPill').textContent = 'erro: ' + e.message; $('statusPill').className = 'pill';
+  }
+}
+function connectWS() {
+  if (!window.io) { $('wsPill').textContent = 'ws indisponível'; return; }
+  socket?.disconnect();
+  socket = io({ transports: ['websocket', 'polling'], auth: { token } });
+  socket.on('connect', () => {
+    $('wsPill').textContent = 'ws live'; $('wsPill').className = 'pill live';
+    socket.emit('join', { rooms: ['cozinha', 'bar', 'caixa'] });
+  });
+  socket.on('disconnect', () => { $('wsPill').textContent = 'ws off'; $('wsPill').className = 'pill'; });
+  for (const ev of ['pedido.enviado', 'item.status', 'item.adicionado', 'mesa.status', 'impressao.reprint'])
+    socket.on(ev, () => carregar());
+}
+async function login() {
+  try {
+    const r = await api('/auth/pin', { method: 'POST', body: JSON.stringify({ email: $('email').value, pin: $('pin').value }) });
+    token = r.access_token; localStorage.setItem('pdv_token', token);
+    $('loginBar').innerHTML = `<span class="pill ok">${r.usuario.nome} · ${r.usuario.papel}</span>`;
+    connectWS(); carregar();
+  } catch (e) { alert('Login falhou: ' + e.message); }
+}
+$('btnLogin').onclick = login;
+$('btnCoz').onclick = () => { estacao = 'COZINHA'; $('btnCoz').classList.add('on'); $('btnBar').classList.remove('on'); knownIds.clear(); carregar(); };
+$('btnBar').onclick = () => { estacao = 'BAR'; $('btnBar').classList.add('on'); $('btnCoz').classList.remove('on'); knownIds.clear(); carregar(); };
+(async () => {
+  if (token) {
+    try {
+      const me = await api('/auth/me');
+      $('loginBar').innerHTML = `<span class="pill ok">${me.nome} · ${me.papel}</span>`;
+      connectWS(); carregar();
+    } catch { token = ''; }
+  }
+  setInterval(carregar, 10000); // fallback se o WS cair
+})();
+</script>
+</body>
+</html>

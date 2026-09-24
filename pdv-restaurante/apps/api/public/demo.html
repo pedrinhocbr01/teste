@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PDV Restaurante — Demo Fase 1 (API)</title>
+<script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+<style>
+  :root { --bg:#0f1216; --card:#1a1f27; --line:#2a323e; --txt:#e8edf3; --mut:#9aa5b3;
+          --ok:#2fbf71; --warn:#f0a020; --bad:#e05555; --acc:#3b82f6; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:15px/1.5 system-ui,sans-serif; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; }
+  .pill { padding:2px 10px; border-radius:20px; font-size:12px; background:var(--card); border:1px solid var(--line); }
+  .pill.ok { color:var(--ok); border-color:var(--ok); }
+  .pill.bad { color:var(--bad); border-color:var(--bad); }
+  main { display:grid; grid-template-columns:340px 1fr 320px; gap:14px; padding:14px; max-width:1500px; margin:auto; }
+  @media (max-width:1100px){ main{ grid-template-columns:1fr; } }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  h2 { font-size:15px; margin:0 0 10px; text-transform:uppercase; letter-spacing:.5px; color:var(--mut); }
+  input,select,button,textarea { font:inherit; border-radius:8px; border:1px solid var(--line); background:#11151b; color:var(--txt); padding:8px 10px; }
+  button { background:var(--acc); border:none; cursor:pointer; font-weight:600; }
+  button.ghost { background:transparent; border:1px solid var(--line); }
+  button.danger { background:var(--bad); }
+  button:disabled { opacity:.5; cursor:default; }
+  form { display:flex; flex-direction:column; gap:8px; }
+  .row { display:flex; gap:8px; } .row>*{ flex:1; }
+  .mesas { display:grid; grid-template-columns:repeat(auto-fill,minmax(86px,1fr)); gap:8px; }
+  .mesa { border:1px solid var(--line); border-radius:8px; padding:8px; text-align:center; cursor:pointer; background:#11151b; }
+  .mesa small{ display:block; color:var(--mut); font-size:11px; }
+  .mesa.sel{ outline:2px solid var(--acc); }
+  .LIVRE{ border-left:4px solid var(--ok);} .OCUPADA{ border-left:4px solid var(--warn);}
+  .AGUARDANDO_CONTA{ border-left:4px solid var(--acc);} .RESERVADA{ border-left:4px solid #a06be8;}
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td{ text-align:left; padding:6px 4px; border-bottom:1px solid var(--line); }
+  .tag{ font-size:11px; padding:1px 8px; border-radius:12px; background:#11151b; border:1px solid var(--line); }
+  .RASCUNHO{ color:var(--mut);} .ENVIADO{ color:var(--warn);} .PRONTO{ color:var(--ok);} .CANCELADO{ color:var(--bad); text-decoration:line-through;}
+  #log{ height:260px; overflow:auto; font:12px/1.6 monospace; background:#0b0e12; border:1px solid var(--line); border-radius:8px; padding:8px; }
+  #log div{ border-bottom:1px dotted #222; }
+  .hint{ font-size:12px; color:var(--mut); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🍽️ PDV — Demo Fase 1</h1>
+  <span id="apiStatus" class="pill">conectando…</span>
+  <span id="userPill" class="pill">deslogado</span>
+  <span style="flex:1"></span>
+  <a href="/kds.html" style="color:var(--acc); font-weight:700; font-size:14px">🔥 KDS cozinha/bar</a>
+  <a href="/caixa.html" style="color:var(--acc); font-weight:700; font-size:14px">💰 Caixa</a>
+  <a href="/estoque.html" style="color:var(--acc); font-weight:700; font-size:14px">📦 Estoque</a>
+  <a href="/relatorios.html" style="color:var(--acc); font-weight:700; font-size:14px">📊 Relatórios</a>
+  <span class="hint">PINs: Ana 1111 · Bruno 2222 · Carla 3333 · Roberto 4444 · Diego 5555</span>
+</header>
+<main>
+  <section>
+    <h2>1 · Login (PIN)</h2>
+    <form id="loginForm">
+      <select id="email">
+        <option value="ana@casadofogo.com">Ana Souza (GARÇOM)</option>
+        <option value="bruno@casadofogo.com">Bruno Lima (GARÇOM)</option>
+        <option value="carla@casadofogo.com">Carla Dias (CAIXA)</option>
+        <option value="roberto@casadofogo.com">Roberto Chef (COZINHEIRO)</option>
+        <option value="diego@casadofogo.com">Diego Manager (GERENTE)</option>
+      </select>
+      <div class="row">
+        <input id="pin" value="1111" maxlength="6" inputmode="numeric" placeholder="PIN" />
+        <button type="submit">Entrar</button>
+      </div>
+    </form>
+    <h2 style="margin-top:14px">2 · Mapa de mesas</h2>
+    <div class="row" style="margin-bottom:8px">
+      <button class="ghost" id="btnMesas">↻ Atualizar</button>
+      <button class="ghost" id="btnAbrir">＋ Abrir pedido</button>
+    </div>
+    <div id="mesas" class="mesas"></div>
+    <p class="hint">Clique numa mesa LIVRE e depois em “Abrir pedido”. Mesas ocupadas mostram o pedido ao lado.</p>
+  </section>
+
+  <section>
+    <h2>3 · Pedido / comanda</h2>
+    <div id="pedido">Selecione uma mesa ocupada.</div>
+    <div id="addItem" style="display:none; margin-top:12px">
+      <h2>Adicionar item (rascunho)</h2>
+      <form id="itemForm">
+        <select id="produto"></select>
+        <div class="row">
+          <input id="qtd" type="number" value="1" min="0.1" step="0.1" />
+          <input id="obs" placeholder="Obs: sem cebola…" />
+        </div>
+        <div class="row">
+          <input id="ponto" placeholder="Ponto da carne (opcional)" />
+          <button type="submit">＋ Lançar</button>
+        </div>
+      </form>
+      <h2 style="margin-top:12px">Enviar para produção</h2>
+      <div class="row">
+        <select id="tipoRemessa">
+          <option>ENTRADA</option><option>PRINCIPAL</option><option>SOBREMESA</option><option>LIVRE</option>
+        </select>
+        <button id="btnEnviar">📤 Enviar rascunhos</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="btnPedirConta" class="ghost">🧾 Pedir conta</button>
+      </div>
+      <p class="hint">O envio cria a remessa, dá baixa no estoque (ficha técnica) e gera jobs em /impressao-log.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Fila de impressão</h2>
+    <button class="ghost" id="btnFila">↻ Atualizar fila</button>
+    <div id="fila" style="margin-top:8px"></div>
+    <h2 style="margin-top:14px">Tempo real (WS)</h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let token = localStorage.getItem('pdv_token') || '';
+let mesaSel = null, pedidoSel = null, socket = null;
+
+function log(msg, obj) {
+  const d = document.createElement('div');
+  const h = new Date().toLocaleTimeString();
+  d.textContent = `[${h}] ${msg}` + (obj ? ' ' + JSON.stringify(obj) : '');
+  $('log').prepend(d);
+}
+async function api(path, opts = {}) {
+  const r = await fetch(path, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(opts.headers || {}) },
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.message || `HTTP ${r.status}`);
+  return data;
+}
+function setUser(u) {
+  $('userPill').textContent = u ? `${u.nome} · ${u.papel}` : 'deslogado';
+  $('userPill').className = 'pill ' + (u ? 'ok' : '');
+}
+function connectWS() {
+  if (!window.io) return log('socket.io CDN indisponível (offline?) — realtime desativado');
+  socket?.disconnect();
+  socket = io({ transports: ['websocket', 'polling'], auth: { token } });
+  socket.on('connect', () => {
+    log('WS conectado, entrando nas salas…');
+    socket.emit('join', { rooms: ['cozinha', 'bar', 'caixa', ...(mesaSel ? [`mesa:${mesaSel.mesa_id}`] : [])] }, (ack) => log('salas', ack));
+  });
+  for (const ev of ['pedido.enviado', 'item.status', 'item.adicionado', 'mesa.status'])
+    socket.on(ev, (p) => { log(ev, p); refreshQuiet(); });
+}
+let refreshT = null;
+function refreshQuiet() { clearTimeout(refreshT); refreshT = setTimeout(() => { carregarMesas(true); if (pedidoSel) carregarPedido(pedidoSel, true); carregarFila(); }, 600); }
+
+async function boot() {
+  try {
+    const h = await api('/health');
+    $('apiStatus').textContent = `online · ${h.driver} · ${h.restaurante?.nome || ''}`;
+    $('apiStatus').className = 'pill ok';
+  } catch (e) { $('apiStatus').textContent = 'offline'; $('apiStatus').className = 'pill bad'; return; }
+  if (token) {
+    try { const me = await api('/auth/me'); setUser(me); connectWS(); }
+    catch { token = ''; localStorage.removeItem('pdv_token'); setUser(null); }
+  }
+  carregarMesas(); carregarFila(); carregarProdutos();
+}
+$("loginForm").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const r = await api('/auth/pin', { method: 'POST', body: JSON.stringify({ email: $('email').value, pin: $('pin').value }) });
+    token = r.access_token; localStorage.setItem('pdv_token', token);
+    setUser(r.usuario); connectWS(); carregarMesas(); carregarProdutos(); log('login ok', r.usuario);
+  } catch (err) { alert('Login falhou: ' + err.message); }
+};
+async function carregarProdutos() {
+  if (!token) return;
+  try {
+    const ps = await api('/produtos');
+    $('produto').innerHTML = ps.map((p) => `<option value="${p.id}">${p.nome} — R$ ${Number(p.preco).toFixed(2)}</option>`).join('');
+  } catch {}
+}
+async function carregarMesas(quiet) {
+  if (!token) { if (!quiet) alert('Faça login primeiro.'); return; }
+  const mesas = await api('/mesas/mapa');
+  $('mesas').innerHTML = '';
+  for (const m of mesas) {
+    const d = document.createElement('div');
+    d.className = `mesa ${m.status} ${mesaSel?.mesa_id === m.mesa_id ? 'sel' : ''}`;
+    d.innerHTML = `<b>Mesa ${m.numero}</b><small>${m.area} · ${m.status}${m.ocupacao_min != null ? ` · ${m.ocupacao_min}min` : ''}${m.garcom ? `<br>${m.garcom}` : ''}</small>`;
+    d.onclick = () => {
+      const antiga = mesaSel?.mesa_id;
+      mesaSel = m;
+      [...$('mesas').children].forEach((c) => c.classList.remove('sel'));
+      d.classList.add('sel');
+      if (m.pedido_id) carregarPedido(m.pedido_id);
+      else { pedidoSel = null; $('pedido').innerHTML = `Mesa ${m.numero} livre — clique em “Abrir pedido”.`; $('addItem').style.display = 'none'; }
+      if (socket?.connected && antiga !== m.mesa_id) {
+        if (antiga) socket.emit('leave', { rooms: [`mesa:${antiga}`] });
+        socket.emit('join', { rooms: [`mesa:${m.mesa_id}`] });
+      } else if (!socket?.connected) connectWS();
+    };
+    $('mesas').appendChild(d);
+  }
+}
+async function carregarPedido(id, quiet) {
+  try {
+    const p = await api(`/pedidos/${id}`);
+    pedidoSel = id;
+    $('addItem').style.display = '';
+    const itens = p.itens.map((i) => `<tr>
+      <td><input type="checkbox" class="pick" value="${i.id}" ${i.status === 'RASCUNHO' ? 'checked' : 'disabled'} /></td>
+      <td>${i.produto_nome}<br><small>${i.observacao || ''} ${i.ponto_carne || ''}</small></td>
+      <td>${i.quantidade}</td><td><span class="tag ${i.status}">${i.status}</span></td>
+      <td>${i.status === 'RASCUNHO' ? `<button class="ghost" onclick="delItem(${i.id})">✕</button>` : ''}</td></tr>`).join('');
+    $('pedido').innerHTML = `<p><b>Pedido #${p.id}</b> · Mesa ${p.mesa_numero} · ${p.garcom_nome || ''} · <span class="tag">${p.status}</span> · Total <b>R$ ${p.total.toFixed(2)}</b></p>
+      <table><tr><th></th><th>Item</th><th>Qtd</th><th>Status</th><th></th></tr>${itens}</table>
+      <p class="hint">Remessas: ${p.remessas.map((r) => `#${r.id} ${r.tipo}`).join(', ') || '—'}</p>`;
+  } catch (e) { if (!quiet) alert(e.message); }
+}
+window.delItem = async (itemId) => {
+  try { await api(`/pedidos/${pedidoSel}/itens/${itemId}`, { method: 'DELETE' }); carregarPedido(pedidoSel); }
+  catch (e) { alert(e.message); }
+};
+$('itemForm').onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    await api(`/pedidos/${pedidoSel}/itens`, { method: 'POST', body: JSON.stringify({
+      produtoId: Number($('produto').value), quantidade: Number($('qtd').value),
+      observacao: $('obs').value || undefined, pontoCarne: $('ponto').value || undefined }) });
+    $('obs').value = ''; $('ponto').value = '';
+    carregarPedido(pedidoSel);
+  } catch (err) { alert(err.message); }
+};
+$('btnEnviar').onclick = async () => {
+  if (!pedidoSel) return alert('Selecione uma mesa com pedido.');
+  const ids = [...document.querySelectorAll('.pick:checked')].map((c) => Number(c.value));
+  if (!ids.length) return alert('Marque ao menos 1 item em RASCUNHO.');
+  try {
+    const r = await api(`/pedidos/${pedidoSel}/enviar`, { method: 'POST',
+      body: JSON.stringify({ tipo: $('tipoRemessa').value, itemIds: ids }) });
+    log('envio ok', { remessa: r.remessa.id, jobs: r.jobs.length });
+    carregarPedido(pedidoSel); carregarFila(); carregarMesas(true);
+  } catch (e) { alert(e.message); }
+};
+$('btnPedirConta').onclick = async () => {
+  if (!pedidoSel) return alert('Selecione uma mesa com pedido.');
+  try {
+    const r = await api(`/pedidos/${pedidoSel}/imprimir-conta`, { method: 'POST', body: '{}' });
+    log('conta pedida', { contas: r.contas.length });
+    carregarPedido(pedidoSel); carregarMesas(true);
+  } catch (e) { alert(e.message); }
+};
+$('btnAbrir').onclick = async () => {
+  if (!mesaSel) return alert('Selecione uma mesa LIVRE primeiro.');
+  try {
+    const p = await api('/pedidos', { method: 'POST', body: JSON.stringify({ mesaId: mesaSel.mesa_id }) });
+    log('pedido aberto', p); carregarMesas(true); carregarPedido(p.id);
+  } catch (e) { alert(e.message); }
+};
+async function carregarFila() {
+  if (!token) return;
+  try {
+    const jobs = await api('/impressao-log?status=PENDENTE');
+    $('fila').innerHTML = jobs.length ? jobs.map((j) =>
+      `<div><span class="tag">Mesa ${j.mesa_numero}</span> ${j.estacao_nome} · remessa #${j.remessa_id} (${j.remessa_tipo})</div>`).join('')
+      : '<p class="hint">Fila vazia — envie um pedido para gerar jobs.</p>';
+  } catch {}
+}
+$('btnMesas').onclick = () => carregarMesas();
+$('btnFila').onclick = () => carregarFila();
+boot();
+</script>
+</body>
+</html>

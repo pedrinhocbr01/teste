@@ -1,0 +1,511 @@
+// ============================================================================
+// PDV Restaurante — modelo Prisma (Fase 1)
+// Espelha db/schema.sql (tabelas + enums). Views (vw_*) e triggers continuam
+// no schema.sql — o Prisma não os gerencia; a API os consome via SQL.
+// Uso: npx prisma generate · npx prisma db pull (para conferir drift)
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TipoUnidade {
+  MASSA
+  VOLUME
+  UNIDADE
+}
+
+enum TipoMovimentoEstoque {
+  ENTRADA
+  SAIDA_VENDA
+  AJUSTE_POSITIVO
+  AJUSTE_NEGATIVO
+  PERDA
+  CONSUMO_INTERNO
+}
+
+enum TipoOrigemMovimento {
+  COMPRA_FORNECEDOR
+  BAIXA_VENDA
+  CONTAGEM
+  CANCELAMENTO_ITEM
+  OUTRO
+}
+
+enum TipoStatusMesa {
+  LIVRE
+  OCUPADA
+  AGUARDANDO_CONTA
+  RESERVADA
+}
+
+enum TipoStatusPedido {
+  ABERTO
+  FECHADO
+  CANCELADO
+}
+
+enum TipoStatusItem {
+  RASCUNHO
+  ENVIADO
+  EM_PREPARO
+  PRONTO
+  ENTREGUE
+  CANCELADO
+}
+
+enum TipoRemessa {
+  ENTRADA
+  PRINCIPAL
+  SOBREMESA
+  LIVRE
+}
+
+enum TipoStatusRemessa {
+  ENVIADA
+  CONCLUIDA
+  CANCELADA
+}
+
+enum TipoEstacao {
+  COZINHA
+  BAR
+}
+
+enum TipoStatusImpressao {
+  PENDENTE
+  IMPRESSA
+  FALHA
+}
+
+enum TipoStatusConta {
+  ABERTA
+  FECHADA
+  CANCELADA
+}
+
+enum TipoFormaPagamento {
+  DINHEIRO
+  PIX
+  CARTAO_CREDITO
+  CARTAO_DEBITO
+  VALE_ALIMENTACAO
+  VALE_REFEICAO
+  OUTRO
+}
+
+enum TipoStatusPagamento {
+  PENDENTE
+  APROVADO
+  CANCELADO
+}
+
+enum TipoStatusCaixa {
+  ABERTO
+  FECHADO
+}
+
+enum TipoMovimentoCaixa {
+  SANGRIA
+  SUPRIMENTO
+}
+
+enum TipoPapelUsuario {
+  GARCOM
+  CAIXA
+  COZINHEIRO
+  BAR
+  GERENTE
+  ADMIN
+}
+
+model Usuario {
+  id        BigInt           @id @default(autoincrement())
+  nome      String
+  email     String?
+  pinHash   String?          @map("pin_hash")
+  papel     TipoPapelUsuario
+  ativo     Boolean          @default(true)
+  criadoEm  DateTime         @default(now()) @map("criado_em") @db.Timestamptz(6)
+
+  pedidosGarcom    Pedido[]           @relation("GarcomPedidos")
+  itensAtualizados PedidoItem[]       @relation("ItemAtualizadoPor")
+  remessasEnviadas Remessa[]          @relation("RemessaEnviadaPor")
+  movimentosEstoque EstoqueMovimento[] @relation("MovUsuario")
+  movimentosCaixa  CaixaMovimento[]   @relation("CaixaMovUsuario")
+  caixasOperados   Caixa[]            @relation("CaixaOperador")
+
+  @@map("usuario")
+}
+
+model ConfigRestaurante {
+  id                     BigInt  @id @default(1)
+  nome                   String  @default("Meu Restaurante")
+  gorjetaPercentual      Decimal @default(10.00) @map("gorjeta_percentual") @db.Decimal(5, 2)
+  gorjetaIncluirPorPadrao Boolean @default(true) @map("gorjeta_incluir_por_padrao")
+  baixaEstoqueEm         String  @default("ENVIO") @map("baixa_estoque_em")
+  tempoMedioPratoMin     Int     @default(25) @map("tempo_medio_prato_min")
+
+  @@map("config_restaurante")
+}
+
+model UnidadeMedida {
+  id    BigInt      @id @default(autoincrement())
+  sigla String      @unique
+  nome  String
+  tipo  TipoUnidade
+
+  insumosEstoque Insumo[] @relation("UnidadeEstoque")
+  insumosCompra  Insumo[] @relation("UnidadeCompra")
+
+  @@map("unidade_medida")
+}
+
+model Fornecedor {
+  id                 BigInt   @id @default(autoincrement())
+  nome               String
+  cnpj               String?
+  telefone           String?
+  email              String?
+  prazoEntregaDias   Int?     @map("prazo_entrega_dias") @db.SmallInt
+  ativo              Boolean  @default(true)
+
+  insumos Insumo[] @relation("FornecedorPadrao")
+
+  @@map("fornecedor")
+}
+
+model Insumo {
+  id                 BigInt   @id @default(autoincrement())
+  nome               String
+  unidadeEstoqueId   BigInt   @map("unidade_estoque_id")
+  unidadeCompraId    BigInt?  @map("unidade_compra_id")
+  fatorCompra        Decimal  @default(1) @map("fator_compra") @db.Decimal(12, 3)
+  custoUnitario      Decimal  @default(0) @map("custo_unitario") @db.Decimal(12, 4)
+  estoqueMinimo      Decimal  @default(0) @map("estoque_minimo") @db.Decimal(12, 3)
+  estoqueMaximo      Decimal? @map("estoque_maximo") @db.Decimal(12, 3)
+  fornecedorPadraoId BigInt?  @map("fornecedor_padrao_id")
+  validoDias         Int?     @map("valido_dias") @db.SmallInt
+  ativo              Boolean  @default(true)
+  criadoEm           DateTime @default(now()) @map("criado_em") @db.Timestamptz(6)
+
+  unidadeEstoque   UnidadeMedida  @relation("UnidadeEstoque", fields: [unidadeEstoqueId], references: [id])
+  unidadeCompra    UnidadeMedida? @relation("UnidadeCompra", fields: [unidadeCompraId], references: [id])
+  fornecedorPadrao Fornecedor?    @relation("FornecedorPadrao", fields: [fornecedorPadraoId], references: [id])
+
+  movimentos   EstoqueMovimento[]
+  fichaItens   FichaTecnicaItem[]
+  produtosVinculados Produto[] @relation("InsumoVinculado")
+
+  @@map("insumo")
+}
+
+model EstoqueMovimento {
+  id            BigInt                @id @default(autoincrement())
+  insumoId      BigInt                @map("insumo_id")
+  tipo          TipoMovimentoEstoque
+  quantidade    Decimal               @db.Decimal(12, 3)
+  custoUnitario Decimal?              @map("custo_unitario") @db.Decimal(12, 4)
+  origem        TipoOrigemMovimento   @default(OUTRO)
+  pedidoItemId  BigInt?               @map("pedido_item_id")
+  usuarioId     BigInt?               @map("usuario_id")
+  motivo        String?
+  dataMovimento DateTime              @default(now()) @map("data_movimento") @db.Timestamptz(6)
+
+  insumo     Insumo      @relation(fields: [insumoId], references: [id])
+  pedidoItem PedidoItem? @relation(fields: [pedidoItemId], references: [id])
+  usuario    Usuario?    @relation("MovUsuario", fields: [usuarioId], references: [id])
+
+  @@index([insumoId, dataMovimento])
+  @@map("estoque_movimento")
+}
+
+model Estacao {
+  id    BigInt     @id @default(autoincrement())
+  nome  String
+  tipo  TipoEstacao
+  ativo Boolean    @default(true)
+
+  impressoras Impressora[]
+  categorias  Categoria[]
+  produtos    Produto[]    @relation("ProdutoEstacao")
+  jobs        ImpressaoLog[]
+
+  @@map("estacao")
+}
+
+model Impressora {
+  id        BigInt  @id @default(autoincrement())
+  estacaoId BigInt  @map("estacao_id")
+  nome      String
+  ip        String
+  porta     Int     @default(9100)
+  papelMm   Int     @default(80) @map("papel_mm") @db.SmallInt
+  ativa     Boolean @default(true)
+
+  estacao Estacao @relation(fields: [estacaoId], references: [id])
+
+  @@map("impressora")
+}
+
+model Categoria {
+  id        BigInt   @id @default(autoincrement())
+  nome      String
+  estacaoId BigInt?  @map("estacao_id")
+  sort      Int      @default(0)
+  ativo     Boolean  @default(true)
+
+  estacao  Estacao?  @relation(fields: [estacaoId], references: [id])
+  produtos Produto[]
+
+  @@map("categoria")
+}
+
+model Produto {
+  id                BigInt   @id @default(autoincrement())
+  nome              String
+  descricao         String?
+  categoriaId       BigInt   @map("categoria_id")
+  preco             Decimal  @db.Decimal(12, 2)
+  estacaoId         BigInt?  @map("estacao_id")
+  insumoVinculadoId BigInt?  @map("insumo_vinculado_id")
+  unidadePorcao     String?  @map("unidade_porcao")
+  ativo             Boolean  @default(true)
+  criadoEm          DateTime @default(now()) @map("criado_em") @db.Timestamptz(6)
+
+  categoria        Categoria  @relation(fields: [categoriaId], references: [id])
+  estacao          Estacao?   @relation("ProdutoEstacao", fields: [estacaoId], references: [id])
+  insumoVinculado  Insumo?    @relation("InsumoVinculado", fields: [insumoVinculadoId], references: [id])
+  ficha            FichaTecnica?
+  itens            PedidoItem[]
+
+  @@map("produto")
+}
+
+model FichaTecnica {
+  id                 BigInt   @id @default(autoincrement())
+  produtoId          BigInt   @unique @map("produto_id")
+  rendimento         Decimal  @default(1) @db.Decimal(12, 3)
+  unidadeRendimento  String?  @map("unidade_rendimento")
+  observacoes        String?
+  atualizadoEm       DateTime @default(now()) @map("atualizado_em") @db.Timestamptz(6)
+
+  produto Produto            @relation(fields: [produtoId], references: [id], onDelete: Cascade)
+  itens   FichaTecnicaItem[]
+
+  @@map("ficha_tecnica")
+}
+
+model FichaTecnicaItem {
+  id              BigInt   @id @default(autoincrement())
+  fichaTecnicaId  BigInt   @map("ficha_tecnica_id")
+  insumoId        BigInt   @map("insumo_id")
+  quantidade      Decimal  @db.Decimal(12, 3)
+  percaPct        Decimal  @default(0) @map("perca_pct") @db.Decimal(5, 2)
+  observacao      String?
+
+  ficha  FichaTecnica @relation(fields: [fichaTecnicaId], references: [id], onDelete: Cascade)
+  insumo Insumo       @relation(fields: [insumoId], references: [id])
+
+  @@index([insumoId])
+  @@map("ficha_tecnica_item")
+}
+
+model Area {
+  id   BigInt @id @default(autoincrement())
+  nome String @unique
+
+  mesas Mesa[]
+
+  @@map("area")
+}
+
+model Mesa {
+  id         BigInt         @id @default(autoincrement())
+  numero     Int
+  areaId     BigInt         @map("area_id")
+  capacidade Int            @default(4) @db.SmallInt
+  status     TipoStatusMesa @default(LIVRE)
+  posX       Int?           @map("pos_x") @db.SmallInt
+  posY       Int?           @map("pos_y") @db.SmallInt
+  ativo      Boolean        @default(true)
+
+  area    Area     @relation(fields: [areaId], references: [id])
+  pedidos Pedido[]
+
+  @@map("mesa")
+}
+
+model Pedido {
+  id         BigInt           @id @default(autoincrement())
+  mesaId     BigInt           @map("mesa_id")
+  garcomId   BigInt?          @map("garcom_id")
+  status     TipoStatusPedido @default(ABERTO)
+  observacao String?
+  abertoEm   DateTime         @default(now()) @map("aberto_em") @db.Timestamptz(6)
+  fechadoEm  DateTime?        @map("fechado_em") @db.Timestamptz(6)
+
+  mesa    Mesa     @relation(fields: [mesaId], references: [id])
+  garcom  Usuario? @relation("GarcomPedidos", fields: [garcomId], references: [id])
+  itens    PedidoItem[]
+  remessas Remessa[]
+  contas   Conta[]
+
+  @@map("pedido")
+}
+
+model Remessa {
+  id         BigInt             @id @default(autoincrement())
+  pedidoId   BigInt             @map("pedido_id")
+  tipo       TipoRemessa        @default(LIVRE)
+  status     TipoStatusRemessa  @default(ENVIADA)
+  enviadoEm  DateTime           @default(now()) @map("enviado_em") @db.Timestamptz(6)
+  enviadoPor BigInt?            @map("enviado_por")
+  motivo     String?
+
+  pedido       Pedido        @relation(fields: [pedidoId], references: [id])
+  enviadoPorUsuario Usuario? @relation("RemessaEnviadaPor", fields: [enviadoPor], references: [id])
+  itens        PedidoItem[]
+  jobs         ImpressaoLog[]
+
+  @@index([pedidoId])
+  @@map("remessa")
+}
+
+model PedidoItem {
+  id                  BigInt         @id @default(autoincrement())
+  pedidoId            BigInt         @map("pedido_id")
+  remessaId           BigInt?        @map("remessa_id")
+  produtoId           BigInt         @map("produto_id")
+  quantidade          Decimal        @db.Decimal(12, 3)
+  precoUnitario       Decimal        @map("preco_unitario") @db.Decimal(12, 2)
+  status              TipoStatusItem @default(RASCUNHO)
+  observacao          String?
+  pontoCarne          String?        @map("ponto_carne")
+  motivoCancelamento  String?        @map("motivo_cancelamento")
+  criadoEm            DateTime       @default(now()) @map("criado_em") @db.Timestamptz(6)
+  atualizadoEm        DateTime       @default(now()) @map("atualizado_em") @db.Timestamptz(6)
+  atualizadoPor       BigInt?        @map("atualizado_por")
+
+  pedido    Pedido   @relation(fields: [pedidoId], references: [id])
+  remessa   Remessa? @relation(fields: [remessaId], references: [id])
+  produto   Produto  @relation(fields: [produtoId], references: [id])
+  atualizador Usuario? @relation("ItemAtualizadoPor", fields: [atualizadoPor], references: [id])
+
+  movimentosBaixa EstoqueMovimento[]
+  contasItens     ContaItem[]
+
+  @@index([pedidoId])
+  @@index([status])
+  @@map("pedido_item")
+}
+
+model ImpressaoLog {
+  id               BigInt              @id @default(autoincrement())
+  remessaId        BigInt              @map("remessa_id")
+  estacaoId        BigInt              @map("estacao_id")
+  tipo             String              @default("PRODUCAO") // PRODUCAO | CANCELAMENTO
+  status           TipoStatusImpressao @default(PENDENTE)
+  conteudo         String?
+  tentativas       Int                 @default(0)
+  criadoEm         DateTime            @default(now()) @map("criado_em") @db.Timestamptz(6)
+  ultimaTentativa  DateTime?           @map("ultima_tentativa") @db.Timestamptz(6)
+
+  remessa Remessa @relation(fields: [remessaId], references: [id])
+  estacao Estacao @relation(fields: [estacaoId], references: [id])
+
+  @@map("impressao_log")
+}
+
+model Conta {
+  id             BigInt         @id @default(autoincrement())
+  pedidoId       BigInt         @map("pedido_id")
+  descricao      String         @default("Conta 1")
+  status         TipoStatusConta @default(ABERTA)
+  incluirServico Boolean        @default(true) @map("incluir_servico")
+  servicoPct     Decimal        @default(10.00) @map("servico_pct") @db.Decimal(5, 2)
+  descontoValor  Decimal        @default(0) @map("desconto_valor") @db.Decimal(12, 2)
+  valorRateio    Decimal?       @map("valor_rateio") @db.Decimal(12, 2)
+  abertoEm       DateTime       @default(now()) @map("aberto_em") @db.Timestamptz(6)
+  fechadaEm      DateTime?      @map("fechada_em") @db.Timestamptz(6)
+
+  pedido     Pedido      @relation(fields: [pedidoId], references: [id])
+  itens      ContaItem[]
+  pagamentos Pagamento[]
+
+  @@index([pedidoId])
+  @@index([status])
+  @@map("conta")
+}
+
+model ContaItem {
+  id           BigInt  @id @default(autoincrement())
+  contaId      BigInt  @map("conta_id")
+  pedidoItemId BigInt  @map("pedido_item_id")
+  quantidade   Decimal @default(1) @db.Decimal(12, 3)
+
+  conta      Conta      @relation(fields: [contaId], references: [id], onDelete: Cascade)
+  pedidoItem PedidoItem @relation(fields: [pedidoItemId], references: [id])
+
+  @@unique([contaId, pedidoItemId])
+  @@index([pedidoItemId])
+  @@map("conta_item")
+}
+
+model Caixa {
+  id            BigInt         @id @default(autoincrement())
+  operadorId    BigInt         @map("operador_id")
+  status        TipoStatusCaixa @default(ABERTO)
+  valorInicial  Decimal        @default(0) @map("valor_inicial") @db.Decimal(12, 2)
+  abertoEm      DateTime       @default(now()) @map("aberto_em") @db.Timestamptz(6)
+  fechadoEm     DateTime?      @map("fechado_em") @db.Timestamptz(6)
+  valorContado  Decimal?       @map("valor_contado") @db.Decimal(12, 2)
+  diferenca     Decimal?       @db.Decimal(12, 2)
+  observacao    String?
+
+  operador   Usuario          @relation("CaixaOperador", fields: [operadorId], references: [id])
+  movimentos CaixaMovimento[]
+  pagamentos Pagamento[]
+
+  @@map("caixa")
+}
+
+model CaixaMovimento {
+  id        BigInt            @id @default(autoincrement())
+  caixaId   BigInt            @map("caixa_id")
+  tipo      TipoMovimentoCaixa
+  valor     Decimal           @db.Decimal(12, 2)
+  motivo    String?
+  usuarioId BigInt?           @map("usuario_id")
+  criadoEm  DateTime          @default(now()) @map("criado_em") @db.Timestamptz(6)
+
+  caixa   Caixa    @relation(fields: [caixaId], references: [id])
+  usuario Usuario? @relation("CaixaMovUsuario", fields: [usuarioId], references: [id])
+
+  @@map("caixa_movimento")
+}
+
+model Pagamento {
+  id          BigInt              @id @default(autoincrement())
+  contaId     BigInt              @map("conta_id")
+  caixaId     BigInt?             @map("caixa_id")
+  forma       TipoFormaPagamento
+  status      TipoStatusPagamento @default(APROVADO)
+  valor       Decimal             @db.Decimal(12, 2)
+  valorTroco  Decimal             @default(0) @map("valor_troco") @db.Decimal(12, 2)
+  referencia  String?
+  observacao  String?
+  pagoEm      DateTime            @default(now()) @map("pago_em") @db.Timestamptz(6)
+
+  conta Conta  @relation(fields: [contaId], references: [id])
+  caixa Caixa? @relation(fields: [caixaId], references: [id])
+
+  @@index([caixaId])
+  @@index([contaId])
+  @@map("pagamento")
+}
