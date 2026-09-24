@@ -241,3 +241,53 @@ Papéis (RBAC): `GARCOM · CAIXA · COZINHEIRO · BAR · GERENTE · ADMIN`
 1. Login com PIN → 2. clica mesa LIVRE → Abrir pedido →
 3. lança itens (rascunho, com obs/ponto) → 4. marca itens + tipo da onda →
 **Enviar** → jobs na fila + baixa no estoque + evento no WS.
+
+---
+
+## 11. Auditoria — melhorias e correções (nesta branch)
+
+Revisão completa das Fases 1–3 (28 itens). Smoke: 62 checks ✔ · Schema ✔ ·
+E2E print-agent ✔.
+
+### Dinheiro (alta)
+- `fecharPedido` bloqueia item entregue sem cobertura em conta válida
+  (rateio por valor fechado assume o pedido — responsabilidade do operador).
+- Estorno bloqueado em caixa já fechado e em pedido fechado; registra quem
+  estornou (`ESTORNO por <nome>`); escritas de conta exigem pedido aberto.
+- Concorrência: pagamentos/divisões/conta/impressão sob `SELECT FOR UPDATE`
+  no pedido + transações (aninhadas participam da de fora); unique parcial
+  garante 1 caixa aberto por operador (409 na corrida).
+- PGlite: mutex serializa transações (conexão única compartilhada).
+
+### Segurança (alta)
+- WS exige JWT no handshake; sala `caixa` restrita a CAIXA/GERENTE/ADMIN
+  (telas e agente enviam o token).
+- Login PIN: 5 erros = bloqueio 5 min (429); compare falso p/ usuário
+  inexistente (anti-enumeração). CORS configurável via `CORS_ORIGIN`.
+
+### Regras (média)
+- Rateio: view deriva `servico_valor` do valor fechado → recibo mostra os
+  10% e a gorjeta do garçom não zera (totais cobrados inalterados).
+- Desconto/serviço/rateio nunca deixam o total abaixo do já pago; total
+  nunca negativo; `fechar` rejeita saldo negativo.
+- Cancelar item com pagamento → 400 (estornar antes); `cancelarPedido`
+  cancela contas sem pagamento junto (nunca órfãs).
+- Mesa: `OCUPADA`/`AGUARDANDO_CONTA` são do sistema; LIVRE/RESERVADA só sem
+  pedido aberto; emite `mesa.status`.
+- Impressão: claim atômico (`POST /impressao-log/claim`, status
+  `EM_IMPRESSAO`, retomada após 5 min) — 2 agentes não duplicam; baixa
+  restrita a COZINHA/BAR/GERENTE/ADMIN; re-ack → 409; job filtra item
+  cancelado. Evento novo `conta.atualizada` no PATCH de conta.
+
+### Robustez (baixa)
+- Tetos: `servicoPct` ≤ 100 (DTO + CHECK), `partes` ≤ 50, `percaPct` 0–99,
+  mínimos de insumo/movimento; filtros inválidos → 400 (não 500); catches
+  23505/23503 faltantes; e-mail único + sem auto-bloqueio/último gerente;
+  `valor_esperado_dinheiro` (gaveta) no resumo e na tela do caixa.
+
+### Migração (banco existente)
+Bancos criados antes desta mudança precisam (fora de transação p/ o enum):
+`ALTER TYPE tipo_status_impressao ADD VALUE 'EM_IMPRESSAO';` + recriar
+`ux_impressao_job`, `ux_caixa_aberto_operador`, `ux_usuario_email`, as views
+`vw_conta_resumo`/`vw_caixa_resumo` e os CHECKs — ou reaplicar `schema.sql`
+do zero (PGlite/dev já faz isso sozinho).

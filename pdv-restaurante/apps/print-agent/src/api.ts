@@ -31,6 +31,11 @@ export class ApiClient {
     private readonly pin: string,
   ) {}
 
+  async getToken(): Promise<string> {
+    if (!this.token) await this.login();
+    return this.token;
+  }
+
   async login(): Promise<void> {
     const r = await fetch(`${this.baseUrl}/auth/pin`, {
       method: 'POST',
@@ -68,6 +73,16 @@ export class ApiClient {
 
   fila(status: 'PENDENTE' | 'FALHA' | 'TODOS'): Promise<FilaJob[]> {
     return this.req(`/impressao-log?status=${status}`);
+  }
+
+  claim(estacaoIds: number[] | null, maxTentativas: number): Promise<{ job: any | null; esgotados: number }> {
+    return this.req('/impressao-log/claim', {
+      method: 'POST',
+      body: JSON.stringify({
+        ...(estacaoIds ? { estacaoIds } : {}),
+        maxTentativas,
+      }),
+    });
   }
 
   job(id: number): Promise<any> {

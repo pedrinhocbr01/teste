@@ -4,12 +4,16 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { DbService } from '../common/db/db.service';
+import { DbService, num } from '../common/db/db.service';
+import { PdvGateway } from '../ws/pdv.gateway';
 import { AtualizarMesaDto, CriarAreaDto, CriarMesaDto } from './dto';
 
 @Injectable()
 export class MesasService {
-  constructor(private readonly db: DbService) {}
+  constructor(
+    private readonly db: DbService,
+    private readonly ws: PdvGateway,
+  ) {}
 
   listarAreas() {
     return this.db.query(`SELECT * FROM area ORDER BY nome`);
@@ -42,7 +46,14 @@ export class MesasService {
          WHERE pi.pedido_id = $1 ORDER BY pi.id`,
         [mesa.pedido_id],
       );
-      pedido = { ...pedido, itens };
+      pedido = {
+        ...pedido,
+        itens: itens.map((i: any) => ({
+          ...i,
+          quantidade: num(i.quantidade),
+          preco_unitario: num(i.preco_unitario),
+        })),
+      };
     }
     return { ...mesa, pedido };
   }
@@ -68,6 +79,22 @@ export class MesasService {
     if (!isGerente && (dto.capacidade !== undefined || dto.areaId !== undefined)) {
       throw new ForbiddenException('Só gerente altera capacidade/área da mesa');
     }
+    if (dto.status === 'OCUPADA' || dto.status === 'AGUARDANDO_CONTA') {
+      throw new BadRequestException(
+        `Status ${dto.status} é controlado pelo sistema (pedidos/contas) — não dá p/ marcar manual`,
+      );
+    }
+    if (dto.status === 'LIVRE' || dto.status === 'RESERVADA') {
+      const aberto = await this.db.queryOne<any>(
+        `SELECT id FROM pedido WHERE mesa_id = $1 AND status = 'ABERTO'`,
+        [id],
+      );
+      if (aberto) {
+        throw new BadRequestException(
+          'Mesa com pedido aberto — feche ou cancele o pedido em vez de forçar o status',
+        );
+      }
+    }
     const sets: string[] = [];
     const params: any[] = [];
     const push = (col: string, v: any) => {
@@ -81,11 +108,20 @@ export class MesasService {
     if (dto.areaId !== undefined) push('area_id', dto.areaId);
     if (!sets.length) throw new BadRequestException('Nada para atualizar');
     params.push(id);
-    const row = await this.db.queryOne(
-      `UPDATE mesa SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
-      params,
-    );
+    let row: any;
+    try {
+      row = await this.db.queryOne(
+        `UPDATE mesa SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
+        params,
+      );
+    } catch (e: any) {
+      if (e?.code === '23503') throw new BadRequestException('Área inválida');
+      throw e;
+    }
     if (!row) throw new NotFoundException('Mesa não encontrada');
+    if (dto.status !== undefined) {
+      this.ws.emitAll('mesa.status', { mesaId: id, status: dto.status });
+    }
     return row;
   }
 }

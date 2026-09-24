@@ -109,3 +109,17 @@ export class ReimprimirDto {
   @IsInt()
   estacaoId?: number;
 }
+
+export class ClaimDto {
+  @IsOptional()
+  @IsArray()
+  @Type(() => Number)
+  @IsInt({ each: true })
+  estacaoIds?: number[];
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  maxTentativas?: number;
+}

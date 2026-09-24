@@ -139,7 +139,7 @@ function setUser(u) {
 function connectWS() {
   if (!window.io) return log('socket.io CDN indisponível (offline?) — realtime desativado');
   socket?.disconnect();
-  socket = io({ transports: ['websocket', 'polling'] });
+  socket = io({ transports: ['websocket', 'polling'], auth: { token } });
   socket.on('connect', () => {
     log('WS conectado, entrando nas salas…');
     socket.emit('join', { rooms: ['cozinha', 'bar', 'caixa', ...(mesaSel ? [`mesa:${mesaSel.mesa_id}`] : [])] }, (ack) => log('salas', ack));

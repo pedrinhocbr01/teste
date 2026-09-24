@@ -37,6 +37,7 @@ export class CardapioService {
       return rows[0];
     } catch (e: any) {
       if (e?.code === '23505') throw new BadRequestException('Categoria já existe');
+      if (e?.code === '23503') throw new BadRequestException('Estação inválida');
       throw e;
     }
   }
@@ -54,10 +55,17 @@ export class CardapioService {
     if (dto.ativo !== undefined) push('ativo', dto.ativo);
     if (!sets.length) throw new BadRequestException('Nada para atualizar');
     params.push(id);
-    const row = await this.db.queryOne(
-      `UPDATE categoria SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
-      params,
-    );
+    let row: any;
+    try {
+      row = await this.db.queryOne(
+        `UPDATE categoria SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
+        params,
+      );
+    } catch (e: any) {
+      if (e?.code === '23505') throw new BadRequestException('Categoria já existe');
+      if (e?.code === '23503') throw new BadRequestException('Estação inválida');
+      throw e;
+    }
     if (!row) throw new NotFoundException('Categoria não encontrada');
     return row;
   }
@@ -184,10 +192,17 @@ export class CardapioService {
     }
     if (!sets.length) throw new BadRequestException('Nada para atualizar');
     params.push(id);
-    const row = await this.db.queryOne(
-      `UPDATE produto SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
-      params,
-    );
+    let row: any;
+    try {
+      row = await this.db.queryOne(
+        `UPDATE produto SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
+        params,
+      );
+    } catch (e: any) {
+      if (e?.code === '23505') throw new BadRequestException('Produto já existe');
+      if (e?.code === '23503') throw new BadRequestException('Categoria/estação/insumo inválido');
+      throw e;
+    }
     if (!row) throw new NotFoundException('Produto não encontrado');
     return row;
   }

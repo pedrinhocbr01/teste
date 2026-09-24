@@ -154,7 +154,7 @@ async function carregar() {
 function connectWS() {
   if (!window.io) { $('wsPill').textContent = 'ws indisponível'; return; }
   socket?.disconnect();
-  socket = io({ transports: ['websocket', 'polling'] });
+  socket = io({ transports: ['websocket', 'polling'], auth: { token } });
   socket.on('connect', () => {
     $('wsPill').textContent = 'ws live'; $('wsPill').className = 'pill live';
     socket.emit('join', { rooms: ['cozinha', 'bar', 'caixa'] });

@@ -12,7 +12,7 @@ import { UsuariosService } from './usuarios.service';
 import { CriarUsuarioDto, AtualizarUsuarioDto, ResetPinDto } from './dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
-import { Roles } from '../common/decorators/roles.decorator';
+import { Roles, CurrentUser, AuthUser } from '../common/decorators/roles.decorator';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('GERENTE', 'ADMIN')
@@ -31,8 +31,12 @@ export class UsuariosController {
   }
 
   @Patch(':id')
-  update(@Param('id', ParseIntPipe) id: number, @Body() dto: AtualizarUsuarioDto) {
-    return this.usuarios.update(id, dto);
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: AtualizarUsuarioDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.usuarios.update(id, dto, user.id);
   }
 
   @Post(':id/reset-pin')

@@ -62,13 +62,21 @@ export class EstoqueService {
       [id],
     );
     if (!insumo) throw new NotFoundException('Insumo não encontrado');
-    const movimentos = await this.db.query(
+    const movimentos = await this.db.query<any>(
       `SELECT m.*, u.nome AS usuario_nome FROM estoque_movimento m
        LEFT JOIN usuario u ON u.id = m.usuario_id
        WHERE m.insumo_id = $1 ORDER BY m.data_movimento DESC LIMIT 30`,
       [id],
     );
-    return { ...insumo, saldo: num(insumo.saldo), movimentos };
+    return {
+      ...insumo,
+      saldo: num(insumo.saldo),
+      movimentos: movimentos.map((m) => ({
+        ...m,
+        quantidade: num(m.quantidade),
+        custo_unitario: m.custo_unitario == null ? null : num(m.custo_unitario),
+      })),
+    };
   }
 
   async criarInsumo(dto: CriarInsumoDto) {
@@ -115,10 +123,17 @@ export class EstoqueService {
     }
     if (!sets.length) throw new BadRequestException('Nada para atualizar');
     params.push(id);
-    const row = await this.db.queryOne(
-      `UPDATE insumo SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
-      params,
-    );
+    let row: any;
+    try {
+      row = await this.db.queryOne(
+        `UPDATE insumo SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
+        params,
+      );
+    } catch (e: any) {
+      if (e?.code === '23505') throw new BadRequestException('Insumo já existe');
+      if (e?.code === '23503') throw new BadRequestException('Fornecedor inválido');
+      throw e;
+    }
     if (!row) throw new NotFoundException('Insumo não encontrado');
     return row;
   }

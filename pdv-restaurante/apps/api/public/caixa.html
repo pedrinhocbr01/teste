@@ -115,9 +115,9 @@ $('loginForm').onsubmit = async (e) => {
 function connectWS() {
   if (!window.io) return;
   socket?.disconnect();
-  socket = io({ transports: ['websocket', 'polling'] });
+  socket = io({ transports: ['websocket', 'polling'], auth: { token } });
   socket.on('connect', () => socket.emit('join', { rooms: ['caixa'] }));
-  for (const ev of ['conta.criada', 'conta.paga', 'conta.fechada', 'caixa.aberto', 'caixa.movimento', 'caixa.fechado', 'pedido.fechado', 'mesa.status'])
+  for (const ev of ['conta.criada', 'conta.paga', 'conta.atualizada', 'conta.fechada', 'caixa.aberto', 'caixa.movimento', 'caixa.fechado', 'pedido.fechado', 'mesa.status'])
     socket.on(ev, () => { carregarCaixa(true); carregarMesas(true); if (contaSel) carregarConta(contaSel, true); });
 }
 
@@ -150,6 +150,7 @@ async function carregarCaixa(quiet) {
         <tr><td>Crédito / Débito</td><td class="num">${R$(r.cartao_credito)} / ${R$(r.cartao_debito)}</td></tr>
         <tr><td>Sangrias</td><td class="num">− ${R$(r.sangrias)}</td></tr>
         <tr><td><b>Esperado</b></td><td class="num"><b>${R$(r.valor_esperado)}</b></td></tr>
+        <tr><td class="hint">↳ em espécie (gaveta)</td><td class="num hint">${R$(r.valor_esperado_dinheiro ?? r.valor_esperado)}</td></tr>
       </table>
       <form id="movForm" style="margin-top:8px"><div class="row">
         <select id="movTipo"><option>SANGRIA</option><option>SUPRIMENTO</option></select>

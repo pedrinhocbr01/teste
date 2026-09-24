@@ -4,6 +4,7 @@ import {
   OnModuleInit,
   Logger,
 } from '@nestjs/common';
+import { AsyncLocalStorage } from 'async_hooks';
 import { Pool, types } from 'pg';
 import * as bcrypt from 'bcryptjs';
 import { readFileSync, existsSync } from 'fs';
@@ -143,14 +144,26 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
     return Number(res.affectedRows ?? res.rowCount ?? 0);
   }
 
+  /**
+   * Fila de transações do PGlite: ele usa UMA conexão compartilhada, então
+   * dois BEGINs concorrentes misturariam os statements na mesma transação.
+   * O mutex serializa as transações (no pg real cada uma tem sua conexão).
+   */
+  private txQueue: Promise<unknown> = Promise.resolve();
+  /** Transação "corrente" (p/ transaction() aninhada entrar na tx de fora). */
+  private txStore = new AsyncLocalStorage<{ q: QueryFn }>();
+
   async transaction<T>(fn: (q: QueryFn) => Promise<T>): Promise<T> {
+    const nested = this.txStore.getStore();
+    // aninhada: participa da transação de fora (atômica de verdade, sem deadlock no mutex)
+    if (nested) return fn(nested.q);
     if (!this.usePglite) {
       const client = await this.pool!.connect();
       try {
         await client.query('BEGIN');
         const q: QueryFn = async (sql, params = []) =>
           (await client.query(sql, params)).rows;
-        const result = await fn(q);
+        const result = await this.txStore.run({ q }, () => fn(q));
         await client.query('COMMIT');
         return result;
       } catch (e) {
@@ -164,20 +177,30 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
         client.release();
       }
     }
+    const run = () => this.pgliteTx(fn);
+    const mine = this.txQueue.then(run, run);
+    // a fila nunca "quebra": erro de uma tx não trava as próximas
+    this.txQueue = mine.catch(() => undefined);
+    return mine;
+  }
+
+  private async pgliteTx<T>(fn: (q: QueryFn) => Promise<T>): Promise<T> {
     const q: QueryFn = (sql, params = []) => this.query(sql, params);
-    await q('BEGIN');
-    try {
-      const result = await fn(q);
-      await q('COMMIT');
-      return result;
-    } catch (e) {
+    return this.txStore.run({ q }, async () => {
+      await q('BEGIN');
       try {
-        await q('ROLLBACK');
-      } catch {
-        /* noop */
+        const result = await fn(q);
+        await q('COMMIT');
+        return result;
+      } catch (e) {
+        try {
+          await q('ROLLBACK');
+        } catch {
+          /* noop */
+        }
+        throw e;
       }
-      throw e;
-    }
+    });
   }
 }
 

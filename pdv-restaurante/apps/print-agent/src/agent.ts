@@ -53,7 +53,14 @@ export class PrintAgent {
 
   private connectWs() {
     try {
-      this.socket = io(this.cfg.apiUrl, { transports: ['websocket', 'polling'], reconnection: true });
+      this.socket = io(this.cfg.apiUrl, {
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        // token fresco a cada (re)conexão — o WS da API exige JWT
+        auth: (cb) => {
+          this.api.getToken().then((token) => cb({ token })).catch(() => cb({}));
+        },
+      });
       this.socket.on('connect', () => {
         this.socket?.emit('join', { rooms: ['cozinha', 'bar', 'caixa'] });
         log('WS conectado — wake imediato ativo');
@@ -81,17 +88,19 @@ export class PrintAgent {
     let impressos = 0;
     let falhas = 0;
     try {
-      const [pend, falha] = await Promise.all([
-        this.api.fila('PENDENTE'),
-        this.api.fila('FALHA'),
-      ]);
-      const jobs = [...pend, ...falha]
-        .filter((j) => !this.cfg.estacaoIds || this.cfg.estacaoIds.includes(Number(j.estacao_id)))
-        .filter((j) => Number(j.tentativas) < this.cfg.maxTentativas)
-        .sort((a, b) => a.id - b.id);
-      if (jobs.length) log(`${jobs.length} job(s) na fila`);
-      for (const job of jobs) {
+      for (;;) {
         if (!this.running) break;
+        // claim atômico: com 2 agentes na LAN, só 1 imprime cada job
+        const { job, esgotados } = await this.api.claim(this.cfg.estacaoIds, this.cfg.maxTentativas);
+        if (!job) {
+          if (esgotados > 0) {
+            log(
+              `ATENÇÃO: ${esgotados} job(s) esgotaram as tentativas (${this.cfg.maxTentativas}) ` +
+                `e NÃO serão impressos — verifique a impressora e reimprima manual`,
+            );
+          }
+          break;
+        }
         try {
           await this.processJob(job);
           impressos++;

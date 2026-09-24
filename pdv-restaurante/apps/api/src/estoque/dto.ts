@@ -27,21 +27,25 @@ export class CriarInsumoDto {
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
+  @Min(0.0001)
   fatorCompra?: number;
 
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
+  @Min(0)
   custoUnitario?: number;
 
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
+  @Min(0)
   estoqueMinimo?: number;
 
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
+  @Min(0)
   estoqueMaximo?: number;
 
   @IsOptional()
@@ -107,9 +111,11 @@ export class CriarMovimentoDto {
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
+  @Min(0)
   custoUnitario?: number;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   motivo?: string;
 }

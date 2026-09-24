@@ -18,12 +18,15 @@ export class CaixaService {
   ) {}
 
   listar(status?: string) {
+    if (status && !['ABERTO', 'FECHADO'].includes(status.toUpperCase())) {
+      throw new BadRequestException('status deve ser ABERTO ou FECHADO');
+    }
     const where = status ? `WHERE cx.status = $1::tipo_status_caixa` : '';
     return this.db.query(
       `SELECT cx.*, u.nome AS operador_nome FROM caixa cx
        JOIN usuario u ON u.id = cx.operador_id
        ${where} ORDER BY cx.id DESC LIMIT 50`,
-      status ? [status] : [],
+      status ? [status.toUpperCase()] : [],
     );
   }
 
@@ -77,6 +80,7 @@ export class CaixaService {
         suprimentos: num(resumo.suprimentos),
         sangrias: num(resumo.sangrias),
         valor_esperado: num(resumo.valor_esperado),
+        valor_esperado_dinheiro: num(resumo.valor_esperado_dinheiro),
         valor_contado: resumo.valor_contado == null ? null : num(resumo.valor_contado),
         diferenca: resumo.diferenca == null ? null : num(resumo.diferenca),
       },
@@ -94,12 +98,20 @@ export class CaixaService {
     if (ja) {
       throw new ConflictException(`Você já tem o caixa #${ja.id} aberto — feche antes de abrir outro`);
     }
-    const rows = await this.db.query<any>(
-      `INSERT INTO caixa (operador_id, valor_inicial, observacao)
-       VALUES ($1,$2,$3) RETURNING *`,
-      [user.id, dto.valorInicial ?? 0, dto.observacao ?? null],
-    );
-    const cx = rows[0];
+    let cx: any;
+    try {
+      const rows = await this.db.query<any>(
+        `INSERT INTO caixa (operador_id, valor_inicial, observacao)
+         VALUES ($1,$2,$3) RETURNING *`,
+        [user.id, dto.valorInicial ?? 0, dto.observacao ?? null],
+      );
+      cx = rows[0];
+    } catch (e: any) {
+      if (e?.code === '23505') {
+        throw new ConflictException('Você já tem um caixa aberto — feche antes de abrir outro');
+      }
+      throw e;
+    }
     this.ws.emitToRooms(['caixa'], 'caixa.aberto', {
       caixaId: cx.id,
       operador: user.nome,
@@ -139,7 +151,9 @@ export class CaixaService {
     const diferenca = toReais(contadoCents - esperadoCents);
     await this.db.execute(
       `UPDATE caixa SET status = 'FECHADO', fechado_em = now(), valor_contado = $1,
-              diferenca = $2, observacao = COALESCE(observacao,'') || $3
+              diferenca = $2,
+              observacao = CASE WHEN $3 = '' THEN observacao
+                                ELSE COALESCE(observacao,'') || $3 END
        WHERE id = $4`,
       [toReais(contadoCents), diferenca, dto.observacao ? ` | Fechamento: ${dto.observacao}` : '', id],
     );

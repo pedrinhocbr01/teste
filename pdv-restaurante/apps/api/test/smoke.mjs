@@ -145,12 +145,31 @@ try {
     method: 'POST', token, body: { estacaoId: estCoz },
   });
   check('reimprimir reaproveita pendente', re1.data.jobs?.[0]?.reusado === true);
-  await api(`/impressao-log/${re1.data.jobs[0].id}`, { method: 'PATCH', token, body: { status: 'IMPRESSA' } });
+  const ackGarcom = await api(`/impressao-log/${re1.data.jobs[0].id}`, { method: 'PATCH', token, body: { status: 'IMPRESSA' } });
+  check('garçom dar baixa em impressão → 403', ackGarcom.status === 403, `status=${ackGarcom.status}`);
+  await api(`/impressao-log/${re1.data.jobs[0].id}`, { method: 'PATCH', token: tokCoz, body: { status: 'IMPRESSA' } });
   const re2 = await api(`/impressao-log/remessa/${remId}/reimprimir`, {
     method: 'POST', token, body: { estacaoId: estCoz },
   });
   check('reimprimir cria novo job após impresso',
     re2.data.jobs?.[0]?.reusado === false && re2.data.jobs[0].id !== re1.data.jobs[0].id);
+
+  // ---- AUDITORIA: claim atômico do print-agent ----
+  const claimGarcom = await api('/impressao-log/claim', { method: 'POST', token, body: {} });
+  check('garçom claim → 403', claimGarcom.status === 403, `status=${claimGarcom.status}`);
+  const claimed = [];
+  for (let i = 0; i < 6; i++) {
+    const c = await api('/impressao-log/claim', { method: 'POST', token: tokCoz, body: {} });
+    if (!c.data.job) break;
+    claimed.push(c.data.job.id);
+  }
+  check('claim drena a fila sem repetir (3 jobs)', claimed.length === 3 && new Set(claimed).size === 3, `ids=${claimed}`);
+  const claimVazio = await api('/impressao-log/claim', { method: 'POST', token: tokCoz, body: {} });
+  check('claim sem jobs → null', claimVazio.data.job === null && claimVazio.data.esgotados === 0);
+  const ackOk = await api(`/impressao-log/${claimed[0]}`, { method: 'PATCH', token: tokCoz, body: { status: 'IMPRESSA' } });
+  check('ack de job claimed → 200', ackOk.status === 200, `status=${ackOk.status}`);
+  const ackDup = await api(`/impressao-log/${claimed[0]}`, { method: 'PATCH', token: tokCoz, body: { status: 'FALHA' } });
+  check('re-ack de job impresso → 409', ackDup.status === 409, `status=${ackDup.status}`);
 
   // 7. RBAC: garçom não cria produto
   const forb = await api('/produtos', { method: 'POST', token, body: { nome: 'X', categoriaId: 1, preco: 1 } });
@@ -226,6 +245,51 @@ try {
   const fechaB = await api(`/pedidos/${pidB}/fechar`, { method: 'POST', token: tokCaixa });
   check('pedido dividido fecha após quitar tudo', fechaB.data?.ok === true);
 
+  // ---- AUDITORIA: estorno em caixa fechado ----
+  const pedC = await api('/pedidos', { method: 'POST', token, body: { mesaId: 4 } });
+  const pidC = pedC.data.id;
+  const c1 = await api(`/pedidos/${pidC}/itens`, { method: 'POST', token, body: { produtoId: 8, quantidade: 1 } });
+  await api(`/pedidos/${pidC}/enviar`, { method: 'POST', token, body: { tipo: 'LIVRE', itemIds: [c1.data.id] } });
+  for (const st of ['EM_PREPARO', 'PRONTO', 'ENTREGUE']) {
+    await api(`/pedidos/${pidC}/itens/${c1.data.id}/status`, { method: 'PATCH', token: tokCoz, body: { status: st } });
+  }
+  const contaC = await api(`/pedidos/${pidC}/imprimir-conta`, { method: 'POST', token });
+  const contaCId = contaC.data.contas[0].id;
+  const pgC = await api(`/contas/${contaCId}/pagamentos`, { method: 'POST', token, body: { forma: 'PIX', valor: 2, caixaId: 1 } });
+  check('pagamento parcial no caixa 1 (seed)', pgC.data.resumo?.saldo > 0, `saldo=${pgC.data.resumo?.saldo}`);
+  const detCx1 = await api('/caixas/1', { token: tokCaixa });
+  check('resumo traz esperado em dinheiro', detCx1.data.resumo?.valor_esperado_dinheiro > 0, `esp_din=${detCx1.data.resumo?.valor_esperado_dinheiro}`);
+  const fechaCx1 = await api('/caixas/1/fechar', { method: 'POST', token: tokCaixa, body: { valorContado: detCx1.data.resumo.valor_esperado } });
+  check('caixa 1 fecha exato', fechaCx1.data.conferencia?.ok === true);
+  const pgCId = pgC.data.pagamentos.find((p) => p.status === 'APROVADO').id;
+  const estFechado = await api(`/pagamentos/${pgCId}/cancelar`, { method: 'POST', token: tokCaixa, body: {} });
+  check('estorno em caixa fechado → 400', estFechado.status === 400, `status=${estFechado.status}`);
+
+  // ---- AUDITORIA: pedido sem cobertura + tetos + mesa ----
+  const pgFechada = await api(`/contas/${contaId}/pagamentos`, { method: 'POST', token, body: { forma: 'PIX', valor: 1, caixaId: cxId } });
+  check('pagamento em conta fechada → 400', pgFechada.status === 400, `status=${pgFechada.status}`);
+  const pedD = await api('/pedidos', { method: 'POST', token, body: { mesaId: 6 } });
+  const pidD = pedD.data.id;
+  const d1 = await api(`/pedidos/${pidD}/itens`, { method: 'POST', token, body: { produtoId: 8, quantidade: 1 } });
+  await api(`/pedidos/${pidD}/enviar`, { method: 'POST', token, body: { tipo: 'LIVRE', itemIds: [d1.data.id] } });
+  for (const st of ['EM_PREPARO', 'PRONTO', 'ENTREGUE']) {
+    await api(`/pedidos/${pidD}/itens/${d1.data.id}/status`, { method: 'PATCH', token: tokCoz, body: { status: st } });
+  }
+  const contaD = await api(`/pedidos/${pidD}/imprimir-conta`, { method: 'POST', token });
+  await api(`/contas/${contaD.data.contas[0].id}`, { method: 'DELETE', token });
+  const fechaD = await api(`/pedidos/${pidD}/fechar`, { method: 'POST', token: tokCaixa });
+  check('fechar pedido sem cobertura → 400', fechaD.status === 400, `status=${fechaD.status}`);
+  const div99 = await api(`/pedidos/${pidD}/dividir-igual`, { method: 'POST', token, body: { partes: 99 } });
+  check('dividir em 99 partes → 400', div99.status === 400, `status=${div99.status}`);
+  const pct500 = await api(`/contas/${contaCId}`, { method: 'PATCH', token, body: { servicoPct: 500 } });
+  check('serviço 500% → 400', pct500.status === 400, `status=${pct500.status}`);
+  const descAlto = await api(`/contas/${contaCId}`, { method: 'PATCH', token, body: { descontoValor: 999 } });
+  check('desconto acima do pago → 400', descAlto.status === 400, `status=${descAlto.status}`);
+  const mesaForce = await api('/mesas/4', { method: 'PATCH', token, body: { status: 'LIVRE' } });
+  check('forçar LIVRE em mesa ocupada → 400', mesaForce.status === 400, `status=${mesaForce.status}`);
+  const reservaOk = await api('/mesas/7', { method: 'PATCH', token, body: { status: 'RESERVADA' } });
+  check('reservar mesa livre → 200', reservaOk.status === 200, `status=${reservaOk.status}`);
+
   // ---- FASE 3: sangria + fechamento do caixa ----
   const sang = await api(`/caixas/${cxId}/movimentos`, { method: 'POST', token: tokCaixa, body: { tipo: 'SANGRIA', valor: 50, motivo: 'smoke: sangria de teste' } });
   check('sangria registrada', sang.data.movimentos?.some((m) => m.tipo === 'SANGRIA' && Number(m.valor) === 50));
@@ -233,6 +297,13 @@ try {
   const esperado = detCx.data.resumo.valor_esperado;
   const fechaCx = await api(`/caixas/${cxId}/fechar`, { method: 'POST', token: tokGer, body: { valorContado: esperado } });
   check('fechamento bate exato', fechaCx.data.conferencia?.ok === true && fechaCx.data.conferencia?.diferenca === 0, JSON.stringify(fechaCx.data.conferencia));
+
+  // ---- AUDITORIA: trava de força bruta (por último) ----
+  for (let i = 0; i < 5; i++) {
+    await api('/auth/pin', { method: 'POST', body: { email: 'bruno@casadofogo.com', pin: '0000' } });
+  }
+  const bloqueado = await api('/auth/pin', { method: 'POST', body: { email: 'bruno@casadofogo.com', pin: '2222' } });
+  check('6ª tentativa (certa) bloqueada → 429', bloqueado.status === 429, `status=${bloqueado.status}`);
 
   console.log(falhas === 0 ? '\n✅ SMOKE OK — Fase 1 funcionando' : `\n❌ ${falhas} falha(s)`);
 } catch (e) {

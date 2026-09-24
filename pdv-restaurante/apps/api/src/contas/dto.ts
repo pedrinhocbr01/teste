@@ -6,6 +6,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
   Min,
 } from 'class-validator';
@@ -25,6 +26,7 @@ export class CriarContaDto {
   @Type(() => Number)
   @IsNumber()
   @Min(0)
+  @Max(100)
   servicoPct?: number;
 
   @IsOptional()
@@ -55,6 +57,7 @@ export class AtualizarContaDto {
   @Type(() => Number)
   @IsNumber()
   @Min(0)
+  @Max(100)
   servicoPct?: number;
 
   @IsOptional()
@@ -136,11 +139,13 @@ export class DividirIgualDto {
   @Type(() => Number)
   @IsInt()
   @Min(2)
+  @Max(50)
   partes!: number;
 
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
+  @MaxLength(120, { each: true })
   descricoes?: string[];
 
   @IsOptional()

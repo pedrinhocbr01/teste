@@ -167,29 +167,47 @@ export class PedidosService {
   /** Remove rascunho (DELETE) ou cancela item enviado (CANCELADO + estorno automático). */
   async removerOuCancelarItem(pedidoId: number, itemId: number, motivo: string | undefined, userId: number) {
     const pedido = await this.pedidoAberto(pedidoId);
-    const item = await this.db.queryOne<any>(
-      `SELECT * FROM pedido_item WHERE id = $1 AND pedido_id = $2`,
-      [itemId, pedidoId],
-    );
-    if (!item) throw new NotFoundException('Item não encontrado neste pedido');
-    if (item.status === 'CANCELADO') throw new BadRequestException('Item já cancelado');
-    if (item.status === 'RASCUNHO') {
-      await this.db.execute(`DELETE FROM pedido_item WHERE id = $1`, [itemId]);
+    const acao = await this.db.transaction(async (q) => {
+      await q(`SELECT id FROM pedido WHERE id = $1 FOR UPDATE`, [pedidoId]);
+      const rows = await q(`SELECT * FROM pedido_item WHERE id = $1 AND pedido_id = $2`, [itemId, pedidoId]);
+      const item = rows[0];
+      if (!item) throw new NotFoundException('Item não encontrado neste pedido');
+      if (item.status === 'CANCELADO') throw new BadRequestException('Item já cancelado');
+      if (item.status === 'RASCUNHO') {
+        await q(`DELETE FROM pedido_item WHERE id = $1`, [itemId]);
+        return 'removido';
+      }
+      // cancelar encolheria a conta retroativo: com pagamento, só via estorno antes
+      const pgto = await q(
+        `SELECT COUNT(*)::int AS n FROM pagamento pg
+         JOIN conta c ON c.id = pg.conta_id
+         JOIN conta_item ci ON ci.conta_id = c.id
+         WHERE ci.pedido_item_id = $1 AND pg.status = 'APROVADO' AND c.status <> 'CANCELADA'`,
+        [itemId],
+      );
+      if (Number(pgto[0]?.n) > 0) {
+        throw new BadRequestException(
+          'Item já lançado em conta COM pagamento — estorne o pagamento antes de cancelar',
+        );
+      }
+      await q(
+        `UPDATE pedido_item SET status = 'CANCELADO', motivo_cancelamento = $1, atualizado_por = $2 WHERE id = $3`,
+        [motivo ?? 'Cancelado pelo salão', userId, itemId],
+      );
+      return 'cancelado_com_estorno';
+    });
+    if (acao === 'removido') {
       this.ws.emitToRooms([`mesa:${pedido.mesa_id}`, `pedido:${pedidoId}`], 'item.status', {
         pedidoId, mesaId: pedido.mesa_id, itemId, status: 'REMOVIDO',
       });
-      return { ok: true, acao: 'removido' };
+      return { ok: true, acao };
     }
-    await this.db.execute(
-      `UPDATE pedido_item SET status = 'CANCELADO', motivo_cancelamento = $1, atualizado_por = $2 WHERE id = $3`,
-      [motivo ?? 'Cancelado pelo salão', userId, itemId],
-    );
     this.ws.emitToRooms(
       [`mesa:${pedido.mesa_id}`, `pedido:${pedidoId}`, 'cozinha', 'bar', 'caixa'],
       'item.status',
       { pedidoId, mesaId: pedido.mesa_id, itemId, status: 'CANCELADO' },
     );
-    return { ok: true, acao: 'cancelado_com_estorno' };
+    return { ok: true, acao };
   }
 
   /**
@@ -251,8 +269,7 @@ export class PedidosService {
 
   /** KDS (cozinha/bar): avança ENVIADO → EM_PREPARO → PRONTO → ENTREGUE. */
   async avancarItem(pedidoId: number, itemId: number, status: string, userId: number) {
-    const pedido = await this.db.queryOne<any>(`SELECT * FROM pedido WHERE id = $1`, [pedidoId]);
-    if (!pedido) throw new NotFoundException('Pedido não encontrado');
+    const pedido = await this.pedidoAberto(pedidoId);
     const item = await this.db.queryOne<any>(
       `SELECT * FROM pedido_item WHERE id = $1 AND pedido_id = $2`,
       [itemId, pedidoId],
@@ -279,17 +296,38 @@ export class PedidosService {
   /** Cancela pedido inteiro (só sem itens enviados; senão cancele item a item). */
   async cancelarPedido(pedidoId: number) {
     const pedido = await this.pedidoAberto(pedidoId);
-    const enviados = await this.db.queryOne<any>(
-      `SELECT COUNT(*)::int AS n FROM pedido_item
-       WHERE pedido_id = $1 AND status NOT IN ('RASCUNHO','CANCELADO')`,
-      [pedidoId],
-    );
-    if (enviados && Number(enviados.n) > 0) {
-      throw new BadRequestException(
-        'Pedido tem itens já enviados — cancele os itens antes de cancelar o pedido',
+    await this.db.transaction(async (q) => {
+      await q(`SELECT id FROM pedido WHERE id = $1 FOR UPDATE`, [pedidoId]);
+      const enviados = await q(
+        `SELECT COUNT(*)::int AS n FROM pedido_item
+         WHERE pedido_id = $1 AND status NOT IN ('RASCUNHO','CANCELADO')`,
+        [pedidoId],
       );
-    }
-    await this.db.execute(`UPDATE pedido SET status = 'CANCELADO', fechado_em = now() WHERE id = $1`, [pedidoId]);
+      if (Number(enviados[0]?.n) > 0) {
+        throw new BadRequestException(
+          'Pedido tem itens já enviados — cancele os itens antes de cancelar o pedido',
+        );
+      }
+      const pgto = await q(
+        `SELECT COUNT(*)::int AS n FROM pagamento pg
+         JOIN conta c ON c.id = pg.conta_id
+         WHERE c.pedido_id = $1 AND pg.status = 'APROVADO'`,
+        [pedidoId],
+      );
+      if (Number(pgto[0]?.n) > 0) {
+        throw new BadRequestException(
+          'Pedido tem pagamentos aprovados — estorne os pagamentos antes de cancelar',
+        );
+      }
+      // contas sem pagamento morrem junto (não podem ficar órfãs ABERTAs)
+      await q(
+        `DELETE FROM conta_item WHERE conta_id IN
+           (SELECT id FROM conta WHERE pedido_id = $1 AND status = 'ABERTA')`,
+        [pedidoId],
+      );
+      await q(`UPDATE conta SET status = 'CANCELADA' WHERE pedido_id = $1 AND status = 'ABERTA'`, [pedidoId]);
+      await q(`UPDATE pedido SET status = 'CANCELADO', fechado_em = now() WHERE id = $1`, [pedidoId]);
+    });
     this.ws.emitAll('mesa.status', { mesaId: pedido.mesa_id, status: 'LIVRE', pedidoId });
     return { ok: true };
   }

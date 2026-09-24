@@ -20,7 +20,7 @@ import {
 } from './dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
-import { Roles } from '../common/decorators/roles.decorator';
+import { Roles, CurrentUser, AuthUser } from '../common/decorators/roles.decorator';
 
 const SALAO = ['GARCOM', 'CAIXA', 'GERENTE', 'ADMIN'] as unknown as string[];
 const CAIXA_OP = ['CAIXA', 'GERENTE', 'ADMIN'] as unknown as string[];
@@ -120,7 +120,11 @@ export class ContasController {
 
   @Roles(...CAIXA_OP)
   @Post('pagamentos/:id/cancelar')
-  estornar(@Param('id', ParseIntPipe) id: number, @Body() dto: CancelarPagamentoDto) {
-    return this.contas.cancelarPagamento(id, dto);
+  estornar(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CancelarPagamentoDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.contas.cancelarPagamento(id, dto, user);
   }
 }
